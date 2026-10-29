@@ -278,6 +278,14 @@ The next run was refused with `0x80310030`: the ISO from picture 1 was still in 
 
 *7. The same result in Control Panel (System and Security > BitLocker Drive Encryption): **C: BitLocker on**. The yellow banner, "some settings are managed by your system administrator", appears because the `JMSC_BitLocker_AD_Backup` GPO sets BitLocker policy on this computer.*
 
+![Active Directory Users and Computers, OU JMSC-WDAC-WRKSTNS, WIN11-PAW-WDAC Properties, BitLocker Recovery tab: one entry dated 2026-10-29 07:31 with Password ID 0034D722-35D7-4E4B-86E4-0A29AB8358C8; Details show the recovery password (redacted), Computer WIN11-PAW-WDAC.skynet-home.local, Date 2026-10-29 07:31:53 +0100 and the same Password ID](images/BITLOCKER-C-DRIVE_ENABLED_5-REDACTED.png)
+
+*8. The copy in AD, as an administrator sees it: ADUC with the BitLocker Recovery Password Viewer ([section 6](#6-find-a-recovery-password-without-a-gui)), **WIN11-PAW-WDAC** > **Properties** > **BitLocker Recovery**. The Password ID matches the protector the script added in picture 4, and the date, 07:31:53, matches the AD object. The recovery password is redacted in this screenshot.*
+
+![Two Active Directory Users and Computers windows. Left: WIN11-PAW-WDAC Properties, BitLocker Recovery tab, one entry dated 2026-10-29 07:31 with Password ID 0034D722-35D7-4E4B-86E4-0A29AB8358C8, recovery password redacted. Right: Find BitLocker recovery password on skynet-home.local with Password ID (first 8 characters) 0034D722, one result - Domain SKYNET-HOME, Computer WIN11-PAW-WDAC, Date Added 2026-10-29 07:31, the same Password ID - recovery password redacted](images/BITLOCKER-C-DRIVE_ENABLED_6-REDACTED.png)
+
+*9. Both ways to look the key up, side by side. Left: the computer's **BitLocker Recovery** tab, as in picture 8. Right: right-click the domain, **skynet-home.local** > **Find BitLocker recovery password**, and enter the first 8 characters of the Password ID, `0034D722`. The search returns the same single entry (domain SKYNET-HOME, computer WIN11-PAW-WDAC). This is the help desk path when a computer is stuck at the recovery screen. The user reads out the Recovery key ID, as the GPO's custom recovery message asks. The admin searches for its first 8 characters and checks that the full ID matches before reading out the password. Both recovery passwords are redacted in this screenshot.*
+
 ---
 
 ## 6. Find a recovery password without a GUI
@@ -308,6 +316,10 @@ DISM.exe /Online /Get-CapabilityInfo /CapabilityName:Rsat.BitLocker.Recovery.Too
 The viewer is an ADUC extension. If ADUC isn't installed yet, add it the same way first: `DISM.exe /Online /Add-Capability /CapabilityName:Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0`.
 
 Reopen ADUC; it then shows a **BitLocker Recovery** tab on computer objects and *Find BitLocker recovery password* on the domain. Without Internet access, append `/Source:<Features on Demand media> /LimitAccess`.
+
+- **One computer:** right-click the computer object (here in **JMSC-WDAC-WRKSTNS**) > **Properties** > **BitLocker Recovery**. Picture 8 in [section 5](#5-encrypt-new-drives) shows the tab.
+- **By the ID on the recovery screen:** right-click the domain > **Find BitLocker recovery password**, enter the first 8 characters of the Password ID, then check that the full ID matches. Picture 9 shows both views side by side.
+- An empty tab can mean either no keys or no read rights: by default only Domain Admins can read recovery passwords ([section 7](#7-who-can-read-the-keys)). Run ADUC with an account that has those rights.
 
 > [!NOTE]
 > The DISM module cmdlets (`Add-WindowsCapability`, `Get-WindowsCapability`) fail in PowerShell 7 with `Class not registered`. Use `DISM.exe`, which works from any shell, or run the cmdlets from Windows PowerShell 5.1 (`powershell.exe`).
