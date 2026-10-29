@@ -157,7 +157,21 @@ Get-ADObject -Filter "objectClass -eq 'msFVE-RecoveryInformation' -and Name -lik
     -Properties msFVE-RecoveryPassword | Select-Object DistinguishedName, msFVE-RecoveryPassword
 ```
 
-**With a GUI:** on a domain-joined Windows 11 computer, `Add-WindowsCapability -Online -Name Rsat.BitLocker.Recovery.Tools~~~~0.0.1.0` (plus `Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0` for ADUC) adds a **BitLocker Recovery** tab to computer objects and *Find BitLocker recovery password* on the domain. Without Internet access, add `-Source <Features on Demand media> -LimitAccess`.
+**With a GUI:** on a domain-joined Windows 11 computer, install the BitLocker Recovery Password Viewer from an elevated prompt:
+
+```powershell
+DISM.exe /Online /Add-Capability /CapabilityName:Rsat.BitLocker.Recovery.Tools~~~~0.0.1.0
+
+# Verify: State : Installed
+DISM.exe /Online /Get-CapabilityInfo /CapabilityName:Rsat.BitLocker.Recovery.Tools~~~~0.0.1.0
+```
+
+The viewer is an ADUC extension. If ADUC isn't installed yet, add it the same way first: `DISM.exe /Online /Add-Capability /CapabilityName:Rsat.ActiveDirectory.DS-LDS.Tools~~~~0.0.1.0`.
+
+Reopen ADUC; it then shows a **BitLocker Recovery** tab on computer objects and *Find BitLocker recovery password* on the domain. Without Internet access, append `/Source:<Features on Demand media> /LimitAccess`.
+
+> [!NOTE]
+> The DISM module cmdlets (`Add-WindowsCapability`, `Get-WindowsCapability`) fail in PowerShell 7 with `Class not registered`. Use `DISM.exe`, which works from any shell, or run the cmdlets from Windows PowerShell 5.1 (`powershell.exe`).
 
 ---
 
