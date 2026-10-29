@@ -41,6 +41,14 @@ foreach ($C in $Calls) {
     $Quiet = ($Text -match '-WarningAction SilentlyContinue') -or ($Text -match '@A' -and $Source -match "WarningAction = 'SilentlyContinue'")
     Assert-That ($Quiet -and $Pipeline -match '\|\s*Out-Null') "Warnings suppressed and output discarded: $($C.GetCommandName()) (line $($C.Extent.StartLineNumber))" $Pipeline
 }
+# The BitLocker module reports failures with Write-Error, which the script's $ErrorActionPreference does not reach inside a
+# module: without -ErrorAction Stop a refused Enable-BitLocker was logged as PASS on WIN11-PAW-WDAC.
+$Reads = @($Ast.FindAll({ param($N) $N -is [Management.Automation.Language.CommandAst] -and $N.GetCommandName() -eq 'Get-BitLockerVolume' }, $true))
+foreach ($C in @($Calls) + @($Reads)) {
+    $Text = $C.Extent.Text
+    $Stops = ($Text -match '-ErrorAction Stop') -or ($Text -match '@A' -and $Source -match "ErrorAction = 'Stop'")
+    Assert-That $Stops "Errors stop the script: $($C.GetCommandName()) (line $($C.Extent.StartLineNumber))" $Text
+}
 
 # --- 2. Harness: real confirmation gate, mocked system access ---
 $Global:BitLockerScriptTestHarness = $true
@@ -69,6 +77,7 @@ function Get-FvePolicy { $Copy = @{}; foreach ($K in $Global:M.Pol.Keys) { $Copy
 function Get-TpmState { [pscustomobject]@{ Present = $Global:M.TpmPresent; Ready = $Global:M.TpmReady } }
 function Get-SecureBootState { $Global:M.SecureBoot }
 function Get-WinReState { $Global:M.WinRe }
+function Get-OpticalMedia { $Global:M.Optical }
 function Wait-Decryption { param([string]$Drive, [int]$Minutes)
     $Global:M.Calls.Add('Wait')
     if ($Global:M.DecryptTimesOut) { return $false }
@@ -88,6 +97,7 @@ function Backup-RecoveryPassword { [CmdletBinding()] param([string]$Drive, [stri
 function Add-TpmProtector { [CmdletBinding()] param([string]$Drive) $Global:M.Calls.Add('AddTpm'); $Global:M.Vol.Protectors = @($Global:M.Vol.Protectors) + @([pscustomobject]@{ Id = $TpmId; Type = 'Tpm' }) }
 function Enable-OsEncryption { [CmdletBinding()] param([string]$Drive, [string]$Method, [bool]$UsedOnly, [bool]$SkipTest)
     $Global:M.Calls.Add('Enable'); $Global:M.EnableArgs = "$Method|$UsedOnly|$SkipTest"
+    if ($Global:M.EnableFails) { throw 'BitLocker Drive Encryption detected bootable media (CD or DVD) in the computer. Remove the media and restart the computer before configuring BitLocker. (0x80310030)' }
     # Turning BitLocker on writes the recovery passwords to AD (EscrowAtEnable = $false: only once encryption starts)
     if ($Global:M.EscrowAtEnable) { foreach ($P in @($Global:M.Vol.Protectors | Where-Object { $_.Type -eq 'RecoveryPassword' })) { if (-not $Global:M.AdIds.Contains($P.Id)) { $Global:M.AdIds.Add($P.Id) } } }
     $Global:M.Vol.Protectors = @($Global:M.Vol.Protectors) + @([pscustomobject]@{ Id = $TpmId; Type = 'Tpm' })
@@ -106,7 +116,7 @@ function Reset-Mock {
         Pol = @{ OSRecovery = 1; OSActiveDirectoryBackup = 1; OSRequireActiveDirectoryBackup = 1; OSRecoveryPassword = 2; EncryptionMethodWithXtsOs = 7 }
         TpmPresent = $true; TpmReady = $true; SecureBoot = $true; WinRe = 'Enabled'; Hw = 'None'
         Vol = New-Vol 'FullyEncrypted' 'XtsAes128' 'Off' @()      # this PAW: device encryption, Waiting for Activation, XTS-AES 128
-        DecryptTimesOut = $false; ResumeNoop = $false
+        DecryptTimesOut = $false; ResumeNoop = $false; Optical = @(); EnableFails = $false
         Calls = New-Object System.Collections.Generic.List[string]; EnableArgs = ''; NewRp = ''
     }
 }
@@ -186,7 +196,14 @@ Invoke-Case 'Adding the recovery password fails (AD backup) -> FAIL, nothing aft
 Invoke-Case 'Backup never appears in AD -> FAIL' -Params $NC -Setup { Set-Compliant; $Global:M.AdIds.Clear(); $Global:M.Escrow = $false } -ExpectExit 1 -ExpectCalls 'BackupRp' -ExpectText 'was backed up, but no AD object'
 Invoke-Case 'Protection does not turn on -> FAIL from the re-read' -Params $NC -Setup { $Global:M.Vol = New-Vol 'FullyEncrypted' 'XtsAes256' 'Off' @(); $Global:M.ResumeNoop = $true } -ExpectExit 1 -ExpectCalls 'AddRp,AddTpm,Resume' -ExpectText 'FAIL Verify protection'
 
-# --- 6. Preconditions (each must stop with nothing changed) ---
+# --- 6. Bootable media (seen on WIN11-PAW-WDAC: Windows ISO in the virtual DVD drive, 0x80310030) ---
+$Iso = 'D: (CPBA_X64FRE_EN-US_DV9)'
+Invoke-Case 'ISO in the DVD drive -> STOP before encrypting' -Params $NC -Setup { $Global:M.Vol = New-Vol 'FullyDecrypted' 'None' 'Off' @((P 'RecoveryPassword' $RpId)); $Global:M.Optical = @($Iso) } -ExpectExit 1 -ExpectText 'CPBA_X64FRE_EN-US_DV9', '0x80310030', 'Set-VMDvdDrive'
+Invoke-Case 'ISO in the DVD drive, -ReEncrypt -> STOP before decrypting' -Params $RE -Setup { $Global:M.Optical = @($Iso) } -ExpectExit 1 -ExpectText '0x80310030'
+Invoke-Case 'ISO in the DVD drive, backfill only -> runs' -Params $NC -Setup { Set-Compliant; $Global:M.AdIds.Clear(); $Global:M.Optical = @($Iso) } -ExpectCalls 'BackupRp'
+Invoke-Case 'Enable-BitLocker refused -> FAIL with its message, never PASS Encrypt' -Params $NC -Setup { $Global:M.Vol = New-Vol 'FullyDecrypted' 'None' 'Off' @((P 'RecoveryPassword' $RpId)); $Global:M.EnableFails = $true } -ExpectExit 1 -ExpectCalls 'Enable' -ExpectText 'FAIL Stopped', '0x80310030' -Extra { if ($Hay -match 'PASS Encrypt') { 'PASS Encrypt was logged' } }
+
+# --- 7. Preconditions (each must stop with nothing changed) ---
 Invoke-Case 'Not elevated -> STOP' -Params $NC -Setup { $Global:M.Admin = $false } -ExpectExit 1 -ExpectText 'not elevated'
 Invoke-Case 'Modules missing -> STOP' -Params $NC -Setup { $Global:M.ModulesFail = $true } -ExpectExit 1 -ExpectText 'could not be loaded'
 Invoke-Case 'Data volume -> STOP' -Params $NC -Setup { $Global:M.Vol.VolumeType = 'Data' } -ExpectExit 1 -ExpectText 'operating system drive only'

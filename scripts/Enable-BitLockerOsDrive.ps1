@@ -112,7 +112,7 @@ if (-not $UnderTest) {
     # Copies only status, method and protector IDs/types - never a recovery password
     function Get-OsVolumeState([string]$Drive) {
         $Saved = $Global:WhatIfPreference; $Global:WhatIfPreference = $false; $WhatIfPreference = $false
-        try { $V = Get-BitLockerVolume -MountPoint $Drive } finally { $Global:WhatIfPreference = $Saved }
+        try { $V = Get-BitLockerVolume -MountPoint $Drive -ErrorAction Stop } finally { $Global:WhatIfPreference = $Saved }
         [pscustomobject]@{
             MountPoint = [string]$V.MountPoint; VolumeType = [string]$V.VolumeType; VolumeStatus = [string]$V.VolumeStatus
             ProtectionStatus = [string]$V.ProtectionStatus; EncryptionMethod = [string]$V.EncryptionMethod; EncryptionPercentage = [double]$V.EncryptionPercentage
@@ -189,11 +189,14 @@ if (-not $UnderTest) {
         if ($Out -match 'Windows RE status:\s*Enabled') { 'Enabled' } elseif ($Out -match 'Windows RE status:\s*Disabled') { 'Disabled' } else { 'Unknown' }
     }
 
+    # 'D: (LABEL)' for each optical drive with a disc or ISO in it
+    function Get-OpticalMedia { Get-CimInstance -ClassName Win32_CDROMDrive | Where-Object { $_.MediaLoaded } | ForEach-Object { '{0} ({1})' -f $_.Drive, $_.VolumeName } }
+
     # True when the drive is fully decrypted before the deadline
     function Wait-Decryption([string]$Drive, [int]$Minutes) {
         $Deadline = (Get-Date).AddMinutes($Minutes)
         while ((Get-Date) -lt $Deadline) {
-            $V = Get-BitLockerVolume -MountPoint $Drive
+            $V = Get-BitLockerVolume -MountPoint $Drive -ErrorAction Stop
             if ([string]$V.VolumeStatus -eq 'FullyDecrypted') { Write-Progress -Activity "Decrypting $Drive" -Completed; return $true }
             Write-Progress -Activity "Decrypting $Drive" -Status ('{0:N1}% still encrypted' -f $V.EncryptionPercentage) -PercentComplete ([Math]::Max(0, [Math]::Min(100, 100 - $V.EncryptionPercentage)))
             Start-Sleep -Seconds 15
@@ -201,28 +204,28 @@ if (-not $UnderTest) {
         return $false
     }
 
-    function Start-Decryption([string]$Drive) { Disable-BitLocker -MountPoint $Drive -WarningAction SilentlyContinue | Out-Null }
+    function Start-Decryption([string]$Drive) { Disable-BitLocker -MountPoint $Drive -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null }
 
     # Returns the new protector's ID. The cmdlet's warning (which shows the password) and its output are discarded.
     function Add-RecoveryPasswordProtector([string]$Drive) {
-        $Before = @((Get-BitLockerVolume -MountPoint $Drive).KeyProtector | Where-Object { [string]$_.KeyProtectorType -eq 'RecoveryPassword' } | ForEach-Object { ([string]$_.KeyProtectorId).ToUpperInvariant() })
-        Add-BitLockerKeyProtector -MountPoint $Drive -RecoveryPasswordProtector -WarningAction SilentlyContinue | Out-Null
-        $After = @((Get-BitLockerVolume -MountPoint $Drive).KeyProtector | Where-Object { [string]$_.KeyProtectorType -eq 'RecoveryPassword' } | ForEach-Object { ([string]$_.KeyProtectorId).ToUpperInvariant() })
+        $Before = @((Get-BitLockerVolume -MountPoint $Drive -ErrorAction Stop).KeyProtector | Where-Object { [string]$_.KeyProtectorType -eq 'RecoveryPassword' } | ForEach-Object { ([string]$_.KeyProtectorId).ToUpperInvariant() })
+        Add-BitLockerKeyProtector -MountPoint $Drive -RecoveryPasswordProtector -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null
+        $After = @((Get-BitLockerVolume -MountPoint $Drive -ErrorAction Stop).KeyProtector | Where-Object { [string]$_.KeyProtectorType -eq 'RecoveryPassword' } | ForEach-Object { ([string]$_.KeyProtectorId).ToUpperInvariant() })
         @($After | Where-Object { $Before -notcontains $_ })[0]
     }
 
-    function Backup-RecoveryPassword([string]$Drive, [string]$Id) { Backup-BitLockerKeyProtector -MountPoint $Drive -KeyProtectorId $Id -WarningAction SilentlyContinue | Out-Null }
+    function Backup-RecoveryPassword([string]$Drive, [string]$Id) { Backup-BitLockerKeyProtector -MountPoint $Drive -KeyProtectorId $Id -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null }
 
-    function Add-TpmProtector([string]$Drive) { Add-BitLockerKeyProtector -MountPoint $Drive -TpmProtector -WarningAction SilentlyContinue | Out-Null }
+    function Add-TpmProtector([string]$Drive) { Add-BitLockerKeyProtector -MountPoint $Drive -TpmProtector -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null }
 
     function Enable-OsEncryption([string]$Drive, [string]$Method, [bool]$UsedOnly, [bool]$SkipTest) {
-        $A = @{ MountPoint = $Drive; EncryptionMethod = $Method; TpmProtector = $true; WarningAction = 'SilentlyContinue' }
+        $A = @{ MountPoint = $Drive; EncryptionMethod = $Method; TpmProtector = $true; WarningAction = 'SilentlyContinue'; ErrorAction = 'Stop' }
         if ($UsedOnly) { $A['UsedSpaceOnly'] = $true }
         if ($SkipTest) { $A['SkipHardwareTest'] = $true }
         Enable-BitLocker @A | Out-Null
     }
 
-    function Resume-Protection([string]$Drive) { Resume-BitLocker -MountPoint $Drive -WarningAction SilentlyContinue | Out-Null }
+    function Resume-Protection([string]$Drive) { Resume-BitLocker -MountPoint $Drive -WarningAction SilentlyContinue -ErrorAction Stop | Out-Null }
 }
 
 # --- Run ---
@@ -305,6 +308,14 @@ try {
     if ($Mode -eq 'Activate') {
         if (@($Vol.Protectors | Where-Object { $_.Type -like 'Tpm*' }).Count -eq 0) { $Steps.Add('AddTpm') }
         if ($Vol.ProtectionStatus -ne 'On') { $Steps.Add('Resume') }
+    }
+
+    # BitLocker refuses to turn on while bootable media is in the computer (FVE_E_BOOTABLE_CDDVD, 0x80310030; seen on
+    # WIN11-PAW-WDAC with the Windows ISO in its virtual DVD drive). Checked before the first change - before -ReEncrypt decrypts.
+    if (@($Steps | Where-Object { @('Decrypt', 'Encrypt', 'AddTpm', 'Resume') -contains $_ }).Count) {
+        $Media = @(Get-OpticalMedia)
+        if ($Media.Count) { throw "STOP: $($Media -join ', ') holds a disc or ISO, and BitLocker refuses to turn on while bootable media is in the computer (0x80310030). Remove it - on a Hyper-V VM, on the host: Get-VMDvdDrive -VMName <vm> | Set-VMDvdDrive -Path `$null - then restart and run this again. Nothing was changed." }
+        Add-Result 'PASS' 'Optical drives' 'no disc or ISO loaded'
     }
 
     if ($Steps.Count -eq 0) {
