@@ -242,12 +242,41 @@ Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes256 -TpmProtector   # fu
 
 Tests (mocks, nothing on the computer or in AD is touched): `.\tests\Test-EnableBitLockerOsDrive.ps1`, in Windows PowerShell 5.1 and PowerShell 7.
 
-**Lab run (2026-10-29, WIN11-PAW-WDAC, a Hyper-V VM with a virtual TPM):** C: started *Waiting for Activation* with XTS-AES 128. The script stopped safely twice on the way, and both cases are now built in:
+**Lab run (2026-10-29, WIN11-PAW-WDAC, a Hyper-V VM with a virtual TPM).** C: started *Waiting for Activation* with XTS-AES 128. The screenshots follow the run in order. The script stopped safely twice on the way, and both cases are now built in.
 
-- With `-ReEncrypt` it decrypted C: and added a recovery password, but stopped because no AD object appeared: on a decrypted drive BitLocker writes the password only when it is turned on (see the note above).
-- The next run was refused with `0x80310030`: the Windows ISO was still in the VM's DVD drive. The script now checks for a disc or ISO before the first change.
+**Before BitLocker**
 
-With the ISO removed and the VM restarted, the run added the recovery password, turned BitLocker on with XTS-AES 256 and the TPM, and confirmed the AD object `2026-10-29T07:31:53+01:00{0034D722-…}` (event 784) before the restart. After the restart: `FullyEncrypted`, XTS-AES 256, 100 %, protection **On**, protectors TPM and recovery password. A final run found nothing to change, and no recovery password appeared in its output or logs.
+![File Explorer, This PC on WIN11-PAW-WDAC: Local Disk (C:) with 96.7 GB free of 138 GB, and DVD Drive (D:) holding the Windows ISO CPBA_X64FRE_EN-US_DV9](images/PRE-BITLOCKER-C-DRIVE.png)
+
+*1. The starting point: C:, and in D: the Windows installation ISO that later blocked `Enable-BitLocker`.*
+
+![First run of Enable-BitLockerOsDrive.ps1 -ReEncrypt: the plan for C: (FullyEncrypted, XtsAes128, protection Off, no protectors) - decrypt, wait up to 240 minutes, add a recovery password and confirm it in AD, encrypt with XtsAes256 and a TPM protector - confirmed with Y](images/PRE-BITLOCKER-C-DRIVE_2.png)
+
+*2. The first run with `-ReEncrypt`: the plan in yellow, confirmed with Y. This was the script's first version. Its step 3 expected the AD object before encrypting, which a decrypted drive cannot give (see the note above), so after decrypting the run stopped there. The script now turns BitLocker on first and then confirms the AD object.*
+
+![The same run decrypting C:, progress bar at 24.0% still encrypted](images/PRE-BITLOCKER-C-DRIVE_3.png)
+
+*3. Decryption in progress. It took about two minutes: decryption started at 07:14:17 (event 770), and the recovery password was created at 07:16:19 (event 775).*
+
+The next run was refused with `0x80310030`: the ISO from picture 1 was still in the VM's DVD drive. The script now checks for a disc or ISO before the first change.
+
+**BitLocker enabled**
+
+![Successful run of Enable-BitLockerOsDrive.ps1: C: FullyDecrypted with no protectors; every check PASS, including no disc or ISO loaded, recovery password {0034D722-...} added, Enable-BitLocker with XtsAes256 and a TPM protector, recovery password found in AD, hardware test pending; NEXT: restart the computer](images/BITLOCKER-C-DRIVE_ENABLED-1.png)
+
+*4. With the ISO removed: the script added the recovery password, turned BitLocker on with XTS-AES 256 and the TPM, and confirmed the AD object `2026-10-29T07:31:53+01:00{0034D722-…}` (event 784), all before the restart. The hardware test was then pending.*
+
+![Windows desktop after the restart, with the notification "BitLocker Drive Encryption Notification Utility - Encryption in progress: Encryption of C: by BitLocker Drive Encryption has started" at 7:34 AM](images/BITLOCKER-C-DRIVE_ENABLED-2.png)
+
+*5. After the restart the hardware test passed and encryption started (notification at 7:34).*
+
+![Verification run of Enable-BitLockerOsDrive.ps1: 1 recovery object stored in AD for the computer; C: FullyEncrypted, XtsAes256, protection On, protectors Tpm and RecoveryPassword {0034D722-...}; Plan: nothing to change; PASSED](images/BITLOCKER-C-DRIVE_ENABLED_3.png)
+
+*6. Running the script again: `FullyEncrypted`, XTS-AES 256, protection **On**, protectors TPM and recovery password, one recovery object in AD - nothing to change. The output shows protector IDs only, never the recovery password.*
+
+![Control Panel, System and Security, BitLocker Drive Encryption: banner "For your security, some settings are managed by your system administrator"; Operating system drive - C: BitLocker on, with Suspend protection, Back up your recovery key and Turn off BitLocker](images/BITLOCKER-C-DRIVE_ENABLED_4.png)
+
+*7. The same result in Control Panel (System and Security > BitLocker Drive Encryption): **C: BitLocker on**. The yellow banner, "some settings are managed by your system administrator", appears because the `JMSC_BitLocker_AD_Backup` GPO sets BitLocker policy on this computer.*
 
 ---
 
