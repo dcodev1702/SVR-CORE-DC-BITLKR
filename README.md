@@ -4,7 +4,7 @@
 > Domain-joined Windows computers can write their **BitLocker recovery passwords and key packages** to **their own computer object in AD DS**. This repository sets that up from a **Server Core 2025 domain controller** with in-box PowerShell only — **no GPMC console, no GUI, no downloads**: one GPO for the clients, a one-time backfill for drives that were encrypted before the GPO existed, and key lookup with `Get-ADObject`. **The domain controller needs no schema extension, no ACL change and no extra role.**
 
 > [!IMPORTANT]
-> **Status (2026-10-28): work in progress — not yet run in the lab.** The policy registry value names and values in [section 3](#3-create-the-gpo-server-core-powershell) are checked against `VolumeEncryption.admx` / `.adml` as shipped with Windows. Lab verification against a Server Core 2025 DC, and scripts that wrap these steps, come next ([Roadmap](#roadmap)). Link the GPO to a test OU first.
+> **Status (2026-10-28): work in progress.** [Section 3](#3-create-the-gpo-server-core-powershell) has run in the lab with its script against a Server Core 2025 DC, and the policy reached a client (see that section). Sections 4–6 and the remaining scripts come next ([Roadmap](#roadmap)). The policy registry value names and values are checked against `VolumeEncryption.admx` / `.adml` as shipped with Windows. Link the GPO to a test OU first.
 
 ---
 
@@ -61,7 +61,23 @@
 
 ## 3. Create the GPO (Server Core, PowerShell)
 
-`Set-GPRegistryValue` writes the same `Registry.pol` entries the GPMC editor would. Because the value names match the ADMX, GPMC on a GUI computer shows them as the normal administrative template settings.
+`Set-GPRegistryValue` writes the same `Registry.pol` entries the GPMC editor would. Because the value names match the ADMX, GPMC on a GUI computer shows them as the normal administrative template settings — provided GPMC finds `VolumeEncryption.admx`. If the domain has a central store (`\\<domain>\SYSVOL\<domain>\Policies\PolicyDefinitions`), GPMC reads templates only from there: copy `VolumeEncryption.admx` and `en-US\VolumeEncryption.adml` into it, or GPMC lists the values under *Extra Registry Settings*. Clients apply them either way.
+
+**Scripted:** [`scripts/Set-BitLockerAdBackupGpo.ps1`](scripts/Set-BitLockerAdBackupGpo.ps1) does what the block below does, from [`scripts/BitLockerAdBackupGpo.json`](scripts/BitLockerAdBackupGpo.json). It also checks every value against `VolumeEncryption.admx`, changes only what differs (a second run changes nothing), backs up an existing GPO first, asks Y/N before any change, verifies the result in AD and SYSVOL, and logs to `C:\Logs`. Windows PowerShell 5.1 or PowerShell 7, on a DC or a domain-joined computer with the GroupPolicy and ActiveDirectory modules:
+
+```powershell
+.\scripts\Set-BitLockerAdBackupGpo.ps1 -WhatIf      # plan only
+.\scripts\Set-BitLockerAdBackupGpo.ps1              # shows the plan in yellow, asks Continue? [Y/N]
+.\scripts\Set-BitLockerAdBackupGpo.ps1 -NoConfirm   # automation
+```
+
+Tests (mocks, nothing in AD is touched): `.\tests\Test-SetBitLockerAdBackupGpo.ps1`, in Windows PowerShell 5.1 and PowerShell 7. They also check that the settings file matches the block below.
+
+**Lab run (2026-10-28, DC25-1):** the script created `JMSC_BitLocker_AD_Backup` with the 24 values and linked it to `OU=JMSC-WDAC-WRKSTNS`. A second run found nothing to change. On WIN11-PAW-WDAC, the computer in that OU, `gpupdate /target:computer` brought all 24 values into `HKLM\SOFTWARE\Policies\Microsoft\FVE`, and `gpresult` lists the GPO as applied.
+
+![GPMC showing the OU JMSC-WDAC-WRKSTNS with three linked GPOs: JMSC-WDAC-PAWS - AppControl Audit (link order 1, enabled), JMSC-WDAC-PAWS - AppControl Enforce (link order 2, link disabled) and JMSC_BitLocker_AD_Backup (link order 3, not enforced, link enabled, GPO status Enabled)](images/GroupPolicy-BLE-GPO.png)
+
+*GPMC after the lab run: `JMSC_BitLocker_AD_Backup` is linked to `JMSC-WDAC-WRKSTNS` as link order 3, link enabled, GPO status Enabled.*
 
 Run the block as one piece (paste all of it, or save it as a `.ps1`). It checks for Active Directory first and stops at the first `STOP` or error; the checks run before anything is created. The domain is read from the computer it runs on, so the same block works in any AD domain.
 
@@ -231,8 +247,8 @@ Only needed if you also want to encrypt the DC's own drives.
 
 ## Roadmap
 
-- [ ] Run sections 3–6 in the lab against a Server Core 2025 DC and record the results here.
-- [ ] Script the GPO creation (settings file, `-WhatIf`).
+- [ ] Run sections 3–6 in the lab against a Server Core 2025 DC and record the results here (section 3: done 2026-10-28).
+- [x] Script the GPO creation (settings file, `-WhatIf`): [`scripts/Set-BitLockerAdBackupGpo.ps1`](scripts/Set-BitLockerAdBackupGpo.ps1).
 - [ ] Script the backfill for a list of computers.
 - [ ] Script key lookup by computer name or recovery key ID.
 - [ ] Help-desk delegation from PowerShell (no Delegation of Control Wizard on Server Core).
