@@ -32,21 +32,26 @@ $KnownPrefixes = @('OS', 'FDV', 'RDV')
 $KnownValues   = @('Recovery', 'ManageDRA', 'RecoveryPassword', 'RecoveryKey', 'HideRecoveryPage', 'ActiveDirectoryBackup', 'ActiveDirectoryInfoToStore', 'RequireActiveDirectoryBackup')
 $NamePattern   = '^[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}$'   # GPO and OU names: no quotes, so they are safe inside AD filters
 $PrefixText    = @{ OS = 'operating system'; FDV = 'fixed data'; RDV = 'removable data' }
+# Policy 'Choose drive encryption method and cipher strength (Windows 10 [Version 1511] and later)'
+$MethodValueNames = @{ OS = 'EncryptionMethodWithXtsOs'; FDV = 'EncryptionMethodWithXtsFdv'; RDV = 'EncryptionMethodWithXtsRdv' }
+$MethodText       = @{ 3 = 'AES-CBC 128'; 4 = 'AES-CBC 256'; 6 = 'XTS-AES 128'; 7 = 'XTS-AES 256' }
+$SettingsFields   = @('GpoName', 'GpoComment', 'OuName', 'Prefixes', 'Values', 'EncryptionMethods')
 
 $Results = New-Object System.Collections.Generic.List[object]
 function Add-Result([string]$Status, [string]$Check, [string]$Detail) { $Results.Add([pscustomobject]@{ Status = $Status; Check = $Check; Detail = $Detail }) }
 
 # --- Decision logic (no system access) ---
 
-# Parse and validate the settings JSON. Returns GpoName, GpoComment, OuName, Prefixes (string[]) and Values (ordered name -> int).
+# Parse and validate the settings JSON. Returns GpoName, GpoComment, OuName, Prefixes (string[]), Values (ordered name -> int)
+# and EncryptionMethods (ordered prefix -> int).
 function Read-Settings([string]$Text, [string]$Source) {
     try { $Raw = $Text | ConvertFrom-Json } catch { throw "STOP: $Source is not valid JSON ($($_.Exception.Message)). Nothing was changed." }
     if ($null -eq $Raw -or $Raw -isnot [System.Management.Automation.PSCustomObject]) { throw "STOP: $Source must hold one JSON object. Nothing was changed." }
     $Fields = @($Raw.PSObject.Properties | ForEach-Object { $_.Name })
-    foreach ($Field in 'GpoName', 'GpoComment', 'OuName', 'Prefixes', 'Values') {
+    foreach ($Field in $SettingsFields) {
         if ($Fields -notcontains $Field) { throw "STOP: $Source has no '$Field'. Nothing was changed." }
     }
-    $Extra = @($Fields | Where-Object { @('GpoName', 'GpoComment', 'OuName', 'Prefixes', 'Values') -notcontains $_ })
+    $Extra = @($Fields | Where-Object { $SettingsFields -notcontains $_ })
     if ($Extra.Count) { throw "STOP: $Source has unknown field(s): $($Extra -join ', '). Nothing was changed." }
 
     foreach ($Field in 'GpoName', 'OuName') {
@@ -77,7 +82,24 @@ function Read-Settings([string]$Text, [string]$Source) {
     }
     if ($Values['ActiveDirectoryBackup'] -ne 1) { throw "STOP: ActiveDirectoryBackup in $Source is $($Values['ActiveDirectoryBackup']); this GPO exists to store recovery information in AD DS, so it must be 1. Nothing was changed." }
 
-    [pscustomobject]@{ GpoName = $Raw.GpoName; GpoComment = $Raw.GpoComment; OuName = $Raw.OuName; Prefixes = $Prefixes.ToArray(); Values = $Values }
+    if ($Raw.EncryptionMethods -isnot [System.Management.Automation.PSCustomObject]) { throw "STOP: EncryptionMethods in $Source must be a JSON object such as { ""OS"": 7 } (7 = XTS-AES 256). Nothing was changed." }
+    $MethodKeys = @($Raw.EncryptionMethods.PSObject.Properties | ForEach-Object { $_.Name })
+    if (@($MethodKeys | Where-Object { $Prefixes -cnotcontains $_ }).Count -or @($Prefixes | Where-Object { $MethodKeys -cnotcontains $_ }).Count) {
+        throw "STOP: EncryptionMethods in $Source must name exactly the drive types in Prefixes ($($Prefixes -join ', ')), not ($($MethodKeys -join ', ')). Nothing was changed."
+    }
+    $Methods = [ordered]@{}
+    foreach ($P in $Prefixes) {
+        $V = $Raw.EncryptionMethods.$P
+        if (-not ($V -is [int] -or $V -is [long]) -or $V -lt 0 -or $V -gt 4294967295) { throw "STOP: EncryptionMethods.$P in $Source must be a whole number (7 = XTS-AES 256), not '$V'. Nothing was changed." }
+        $Methods[$P] = [long]$V
+    }
+
+    [pscustomobject]@{ GpoName = $Raw.GpoName; GpoComment = $Raw.GpoComment; OuName = $Raw.OuName; Prefixes = $Prefixes.ToArray(); Values = $Values; EncryptionMethods = $Methods }
+}
+
+# 'OS XTS-AES 256, FDV XTS-AES 256' for messages
+function Get-MethodSummary($Settings) {
+    ($Settings.Prefixes | ForEach-Object { $T = $MethodText[[int]$Settings.EncryptionMethods[$_]]; if (-not $T) { $T = "value $($Settings.EncryptionMethods[$_])" }; "$_ $T" }) -join ', '
 }
 
 # Allowed values per registry value name under SOFTWARE\Policies\Microsoft\FVE, read from VolumeEncryption.admx
@@ -110,10 +132,11 @@ function Get-AdmxAllowedValues([string]$XmlText) {
     return $Allowed
 }
 
-# Registry value name -> value for every prefix, in settings order
+# Registry value name -> value: the recovery values for every prefix, then each prefix's encryption method
 function Get-DesiredValues($Settings) {
     $Desired = [ordered]@{}
     foreach ($P in $Settings.Prefixes) { foreach ($Name in $Settings.Values.Keys) { $Desired["$P$Name"] = $Settings.Values[$Name] } }
+    foreach ($P in $Settings.Prefixes) { $Desired[$MethodValueNames[$P]] = $Settings.EncryptionMethods[$P] }
     return $Desired
 }
 
@@ -285,7 +308,7 @@ try {
     $SettingsText = Get-SettingsText $SettingsPath
     if ($null -eq $SettingsText) { throw "STOP: settings file $SettingsPath not found. Nothing was changed." }
     $Settings = Read-Settings $SettingsText $SettingsPath
-    Add-Result 'PASS' 'Settings' ("{0}: GPO '{1}', OU '{2}', drive types {3}, {4} values each" -f $SettingsPath, $Settings.GpoName, $Settings.OuName, ($Settings.Prefixes -join '/'), $Settings.Values.Count)
+    Add-Result 'PASS' 'Settings' ("{0}: GPO '{1}', OU '{2}', drive types {3}, {4} recovery values each; encryption {5}" -f $SettingsPath, $Settings.GpoName, $Settings.OuName, ($Settings.Prefixes -join '/'), $Settings.Values.Count, (Get-MethodSummary $Settings))
 
     try { $ModuleInfo = Import-GpModules } catch { throw "STOP: the GroupPolicy and ActiveDirectory modules could not be loaded ($($_.Exception.Message)). Run this on a DC, or install RSAT Group Policy Management and AD DS tools. Nothing was changed." }
     Add-Result 'PASS' 'Modules' ([string]$ModuleInfo)
@@ -366,6 +389,8 @@ try {
             if ($Settings.Values['RequireActiveDirectoryBackup'] -eq 1) {
                 $Detail.Add('        BitLocker will not turn on for ' + (($Settings.Prefixes | ForEach-Object { $PrefixText[$_] }) -join ', ') + ' drives until that write succeeds.')
             }
+            $Detail.Add("        Drives encrypted from then on use: $(Get-MethodSummary $Settings). Drives that are already encrypted keep")
+            $Detail.Add('        their method until they are decrypted and encrypted again.')
             if ($NeedCreate) { $Detail.Add("Undo: Remove-GPO -Name '$($Settings.GpoName)'   (also removes its links)") }
             else { $Detail.Add("Undo: Restore-GPO -Guid $($Gpo.Id) -Path <the backup folder listed in the results>") }
             Confirm-Change -NoConfirm:$NoConfirm -Action "create or update the BitLocker AD DS backup GPO in $($Domain.DNSRoot)" -Detail $Detail.ToArray()

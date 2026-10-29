@@ -12,5 +12,10 @@
         "ActiveDirectoryBackup": 1,
         "ActiveDirectoryInfoToStore": 1,
         "RequireActiveDirectoryBackup": 1
+    },
+    "EncryptionMethods": {
+        "OS": 7,
+        "FDV": 7,
+        "RDV": 7
     }
 }

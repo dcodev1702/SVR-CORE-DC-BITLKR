@@ -56,6 +56,10 @@ Assert-That (($RPrefixes -join ',') -ceq (@($Settings.Prefixes) -join ',')) 'REA
 $SValues = @($Settings.Values.PSObject.Properties | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -join ','
 $RValuesText = @($RValues.Keys | ForEach-Object { '{0}={1}' -f $_, $RValues[$_] }) -join ','
 Assert-That ($RValuesText -ceq $SValues) 'README = settings: 8 values in the same order' "README '$RValuesText' / settings '$SValues'"
+$MethodNames = @{ OS = 'EncryptionMethodWithXtsOs'; FDV = 'EncryptionMethodWithXtsFdv'; RDV = 'EncryptionMethodWithXtsRdv' }
+$RMethods = @([regex]::Matches([regex]::Match($Block, '\$methods = \[ordered\]@\{([^}]*)\}').Groups[1].Value, '(\w+)\s*=\s*(\d+)') | ForEach-Object { '{0}={1}' -f $_.Groups[1].Value, $_.Groups[2].Value }) -join ','
+$SMethods = @($Settings.EncryptionMethods.PSObject.Properties | ForEach-Object { '{0}={1}' -f $MethodNames[$_.Name], $_.Value }) -join ','
+Assert-That ($RMethods -ceq $SMethods) 'README = settings: encryption methods' "README '$RMethods' / settings '$SMethods'"
 
 # --- 2. Harness: real confirmation gate, mocked system access ---
 $Global:GpoScriptTestHarness = $true
@@ -65,6 +69,7 @@ $OuDn = 'OU=JMSC-WDAC-WRKSTNS,DC=skynet-home,DC=local'
 $GpoId = [guid]'0a1b2c3d-1111-2222-3333-444455556666'
 $Desired = [ordered]@{}
 foreach ($P in $Settings.Prefixes) { foreach ($Pr in $Settings.Values.PSObject.Properties) { $Desired["$P$($Pr.Name)"] = [long]$Pr.Value } }
+foreach ($P in $Settings.Prefixes) { $Desired[$MethodNames[$P]] = [long]$Settings.EncryptionMethods.$P }
 
 function Test-Interactive { $Global:M.Interactive }
 function Read-Host { param([string]$Prompt) $Global:M.ReadHostCalls++; if ($Global:M.Answers.Count -gt 0) { $Global:M.Answers.Dequeue() } else { '' } }
@@ -156,21 +161,22 @@ function Invoke-Case {
     if ($Problems.Count) { Write-Host $Out }
 }
 $NC = @{ NoConfirm = $true }
-$Fresh = 'NewGpo,Set*24,NewLink'
+$Fresh = 'NewGpo,Set*27,NewLink'
 
 # --- 3. Confirmation gate ---
-Invoke-Case 'Fresh, -NoConfirm: create GPO, set 24 values, link' -Params $NC -ExpectCalls $Fresh -ExpectReadHost 0 -ExpectText 'Verify values', 'Verify link', 'Registry.pol SHA-256' -Extra {
+Invoke-Case 'Fresh, -NoConfirm: create GPO, set 27 values, link' -Params $NC -ExpectCalls $Fresh -ExpectReadHost 0 -ExpectText 'Verify values', 'Verify link', 'Registry.pol SHA-256', 'encryption OS XTS-AES 256, FDV XTS-AES 256, RDV XTS-AES 256' -Extra {
     if ($Global:M.Created -cne "$($Settings.GpoName)|$($Settings.GpoComment)") { return "created '$($Global:M.Created)'" }
     if ($Global:M.LinkTarget -cne $OuDn) { return "linked to '$($Global:M.LinkTarget)'" }
     if (-not $Global:M.SetLog.Contains('RDVRequireActiveDirectoryBackup=1')) { return 'RDVRequireActiveDirectoryBackup=1 was not set' }
+    foreach ($N in 'EncryptionMethodWithXtsOs=7', 'EncryptionMethodWithXtsFdv=7', 'EncryptionMethodWithXtsRdv=7') { if (-not $Global:M.SetLog.Contains($N)) { return "$N was not set" } }
     if (-not $Global:M.OuQueries.Contains('JMSC-WDAC-WRKSTNS|DC=skynet-home,DC=local')) { return "OU query was [$($Global:M.OuQueries -join '; ')]" } }
-Invoke-Case 'Interactive Y: shows scope and effect, then applies' -Setup { Set-Answers 'Y' } -ExpectCalls $Fresh -ExpectReadHost 1 -ExpectText 'Applies to: 1 computer(s) in that OU: WIN11-PAW-WDAC', 'operating system, fixed data, removable data drives', "Undo: Remove-GPO -Name 'JMSC_BitLocker_AD_Backup'"
+Invoke-Case 'Interactive Y: shows scope and effect, then applies' -Setup { Set-Answers 'Y' } -ExpectCalls $Fresh -ExpectReadHost 1 -ExpectText 'Applies to: 1 computer(s) in that OU: WIN11-PAW-WDAC', 'operating system, fixed data, removable data drives', 'Drives encrypted from then on use: OS XTS-AES 256', "Undo: Remove-GPO -Name 'JMSC_BitLocker_AD_Backup'"
 Invoke-Case 'Interactive yes -> applies' -Setup { Set-Answers 'yes' } -ExpectCalls $Fresh -ExpectReadHost 1
 Invoke-Case 'Interactive N -> STOP, nothing changed' -Setup { Set-Answers 'N' } -ExpectExit 1 -ExpectReadHost 1 -ExpectText 'not confirmed'
 Invoke-Case 'Interactive invalid x3 -> STOP' -Setup { Set-Answers 'maybe', 'x', '' } -ExpectExit 1 -ExpectReadHost 3 -ExpectText 'not confirmed'
 Invoke-Case 'Interactive invalid then Y -> applies' -Setup { Set-Answers 'ok', 'Y' } -ExpectCalls $Fresh -ExpectReadHost 2
 Invoke-Case 'Non-interactive without -NoConfirm -> STOP' -ExpectExit 1 -ExpectReadHost 0 -ExpectText 'non-interactive'
-Invoke-Case '-WhatIf -> plan only' -Params @{ WhatIf = $true } -ExpectReadHost 0 -ExpectText 'would create', 'would set 24', 'would link'
+Invoke-Case '-WhatIf -> plan only' -Params @{ WhatIf = $true } -ExpectReadHost 0 -ExpectText 'would create', 'would set 27', 'would link'
 Invoke-Case 'Already compliant -> no prompt, no change, verified' -Setup { Set-Answers 'Y'; Set-Compliant } -ExpectReadHost 0 -ExpectText 'nothing to change', 'Verify values', 'Verify link'
 
 # --- 4. Existing GPO ---
@@ -207,6 +213,13 @@ Invoke-Case 'Negative value -> STOP' -Params $NC -Setup { $Global:M.SettingsText
 Invoke-Case 'ActiveDirectoryBackup 0 -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Values.ActiveDirectoryBackup = 0 } } -ExpectExit 1 -ExpectText 'must be 1'
 Invoke-Case 'Value outside the ADMX (RecoveryPassword 3) -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Values.RecoveryPassword = 3 } } -ExpectExit 1 -ExpectText 'OSRecoveryPassword = 3 (allowed: 2, 1, 0)'
 Invoke-Case 'ActiveDirectoryInfoToStore 0 (not in the ADMX) -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Values.ActiveDirectoryInfoToStore = 0 } } -ExpectExit 1 -ExpectText 'ActiveDirectoryInfoToStore = 0'
+Invoke-Case 'EncryptionMethods missing -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.PSObject.Properties.Remove('EncryptionMethods') } } -ExpectExit 1 -ExpectText "no 'EncryptionMethods'"
+Invoke-Case 'EncryptionMethods for a drive type not in Prefixes -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Prefixes = @('OS', 'FDV') } } -ExpectExit 1 -ExpectText 'must name exactly the drive types'
+Invoke-Case 'EncryptionMethods missing a drive type -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.EncryptionMethods.PSObject.Properties.Remove('FDV') } } -ExpectExit 1 -ExpectText 'must name exactly the drive types'
+Invoke-Case 'Encryption method as a string -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.EncryptionMethods.OS = 'XtsAes256' } } -ExpectExit 1 -ExpectText 'EncryptionMethods.OS'
+Invoke-Case 'Encryption method 5 (not in the ADMX) -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.EncryptionMethods.OS = 5 } } -ExpectExit 1 -ExpectText 'EncryptionMethodWithXtsOs = 5 (allowed: 3, 4, 6, 7)'
+Invoke-Case 'Encryption method 6 (XTS-AES 128) -> accepted' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.EncryptionMethods.RDV = 6 } } -ExpectCalls $Fresh -ExpectText 'RDV XTS-AES 128' -Extra { if (-not $Global:M.SetLog.Contains('EncryptionMethodWithXtsRdv=6')) { 'EncryptionMethodWithXtsRdv=6 was not set' } }
+Invoke-Case 'Existing GPO without the encryption methods -> backup, set 3' -Params $NC -Setup { Set-Compliant; foreach ($N in $MethodNames.Values) { $Global:M.Values.Remove($N) } } -ExpectCalls 'Backup,Set*3' -ExpectText 'EncryptionMethodWithXtsOs : (not set) -> 7'
 Invoke-Case 'Modules missing -> STOP' -Params $NC -Setup { $Global:M.ModulesFail = $true } -ExpectExit 1 -ExpectText 'could not be loaded'
 Invoke-Case 'Not domain-joined -> STOP' -Params $NC -Setup { $Global:M.Joined = $false } -ExpectExit 1 -ExpectText 'not joined to an Active Directory domain'
 Invoke-Case 'No DC answers -> STOP' -Params $NC -Setup { $Global:M.NoDc = $true } -ExpectExit 1 -ExpectText 'no domain controller answered'
@@ -222,7 +235,7 @@ Invoke-Case 'Two OUs with the name -> STOP' -Params $NC -Setup { $Global:M.Ous =
 Invoke-Case '-SettingsPath that is not .json -> rejected before the script runs' -Params @{ NoConfirm = $true; SettingsPath = 'C:\cfg\settings.txt' } -ExpectExit 99 -ExpectText 'SettingsPath'
 
 # --- 6. Other settings and warnings ---
-Invoke-Case 'Only OS and FDV -> 16 values' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Prefixes = @('OS', 'FDV') } } -ExpectCalls 'NewGpo,Set*16,NewLink' -Extra { if (@($Global:M.SetLog | Where-Object { $_ -like 'RDV*' }).Count) { 'an RDV value was set' } }
+Invoke-Case 'Only OS and FDV -> 18 values' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Prefixes = @('OS', 'FDV'); $O.EncryptionMethods.PSObject.Properties.Remove('RDV') } } -ExpectCalls 'NewGpo,Set*18,NewLink' -Extra { if (@($Global:M.SetLog | Where-Object { $_ -like 'RDV*' -or $_ -like '*Rdv=*' }).Count) { 'an RDV value was set' } }
 Invoke-Case 'Another GPO sets BitLocker values -> WARN, still applies' -Params $NC -Setup { $Global:M.Competitors = @('Old BitLocker (precedence 1, linked at DC=skynet-home,DC=local)') } -ExpectCalls $Fresh -ExpectText 'WARN Other BitLocker GPOs'
 Invoke-Case 'OU without computers -> WARN, still applies' -Params $NC -Setup { $Global:M.Computers = @() } -ExpectCalls $Fresh -ExpectText 'holds no computer objects'
 Invoke-Case 'AD and SYSVOL versions differ -> WARN' -Params $NC -Setup { Set-Compliant; $Global:M.SysvolVersion = 24 } -ExpectText 'replication may still be running'
