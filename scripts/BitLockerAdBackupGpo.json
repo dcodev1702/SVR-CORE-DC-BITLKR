@@ -1,0 +1,16 @@
+{
+    "GpoName": "JMSC_BitLocker_AD_Backup",
+    "GpoComment": "BitLocker: escrow recovery passwords and key packages to AD DS",
+    "OuName": "JMSC-WDAC-WRKSTNS",
+    "Prefixes": [ "OS", "FDV", "RDV" ],
+    "Values": {
+        "Recovery": 1,
+        "ManageDRA": 1,
+        "RecoveryPassword": 2,
+        "RecoveryKey": 2,
+        "HideRecoveryPage": 0,
+        "ActiveDirectoryBackup": 1,
+        "ActiveDirectoryInfoToStore": 1,
+        "RequireActiveDirectoryBackup": 1
+    }
+}
