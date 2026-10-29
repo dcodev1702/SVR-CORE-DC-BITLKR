@@ -73,7 +73,7 @@
 
 Tests (mocks, nothing in AD is touched): `.\tests\Test-SetBitLockerAdBackupGpo.ps1`, in Windows PowerShell 5.1 and PowerShell 7. They also check that the settings file matches the block below.
 
-**Lab run (2026-10-28, DC25-1):** the script created `JMSC_BitLocker_AD_Backup` with the 24 values and linked it to `OU=JMSC-WDAC-WRKSTNS`. A second run found nothing to change. On WIN11-PAW-WDAC, the computer in that OU, `gpupdate /target:computer` brought all 24 values into `HKLM\SOFTWARE\Policies\Microsoft\FVE`, and `gpresult` lists the GPO as applied.
+**Lab run (2026-10-28, DC25-1):** the script created `JMSC_BitLocker_AD_Backup` with the 24 values and linked it to `OU=JMSC-WDAC-WRKSTNS`. A second run found nothing to change. On WIN11-PAW-WDAC, the computer in that OU, `gpupdate /target:computer` brought all 24 values into `HKLM\SOFTWARE\Policies\Microsoft\FVE`, and `gpresult` lists the GPO as applied. A later run the same day backed up the GPO and added the three encryption-method values (XTS-AES 256, 27 values in all); the PAW received them at its next `gpupdate`.
 
 ![GPMC showing the OU JMSC-WDAC-WRKSTNS with three linked GPOs: JMSC-WDAC-PAWS - AppControl Audit (link order 1, enabled), JMSC-WDAC-PAWS - AppControl Enforce (link order 2, link disabled) and JMSC_BitLocker_AD_Backup (link order 3, not enforced, link enabled, GPO status Enabled)](images/GroupPolicy-BLE-GPO.png)
 
@@ -122,9 +122,15 @@ Run the block as one piece (paste all of it, or save it as a `.ps1`). It checks 
         }
     }
 
+    # Encryption method for drives encrypted from now on: 7 = XTS-AES 256 (6 = XTS-AES 128, 4 = AES-CBC 256, 3 = AES-CBC 128)
+    $methods = [ordered]@{ EncryptionMethodWithXtsOs = 7; EncryptionMethodWithXtsFdv = 7; EncryptionMethodWithXtsRdv = 7 }
+    foreach ($m in $methods.GetEnumerator()) {
+        Set-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName $m.Key -Type DWord -Value $m.Value | Out-Null
+    }
+
     New-GPLink -Guid $gpo.Id -Target $Target -LinkEnabled Yes
 
-    # Check what the GPO holds (24 values: 8 each for OS, FDV and RDV)
+    # Check what the GPO holds (27 values: 8 recovery values each for OS, FDV and RDV, plus 3 encryption methods)
     Get-GPRegistryValue -Name $GpoName -Key $Key | Sort-Object ValueName | Format-Table ValueName, Value
 
     # Removable drives: BitLocker To Go only once the key is in AD - expect Value 1
@@ -142,6 +148,10 @@ Run the block as one piece (paste all of it, or save it as a `.ps1`). It checks 
 | `…ActiveDirectoryBackup` | Save BitLocker recovery information to AD DS for … drives |
 | `…ActiveDirectoryInfoToStore` | Configure storage of BitLocker recovery information to AD DS: **Store recovery passwords and key packages** |
 | `…RequireActiveDirectoryBackup` | Do not enable BitLocker until recovery information is stored to AD DS for … drives |
+| `EncryptionMethodWithXtsOs` / `…Fdv` / `…Rdv` | Policy *Choose drive encryption method and cipher strength (Windows 10 [Version 1511] and later)* = **Enabled**, **XTS-AES 256-bit** for operating system, fixed and removable drives |
+
+> [!NOTE]
+> **Encryption method.** The policy applies when BitLocker starts encrypting a drive. A drive that is already encrypted keeps its method (Windows 11 device encryption uses XTS-AES 128) until it is decrypted and encrypted again ([section 5](#5-encrypt-new-drives)). A removable drive encrypted with XTS-AES can be read only on Windows 10 version 1511 or later.
 
 > [!WARNING]
 > **Removable drives (`RDV`).** Because `'RDV'` is in the prefix list, the loop also sets `RDVRequireActiveDirectoryBackup = 1` (*Do not enable BitLocker until recovery information is stored to AD DS for removable data drives*). BitLocker To Go can then only be turned on while a DC is reachable.
@@ -150,7 +160,7 @@ Run the block as one piece (paste all of it, or save it as a `.ps1`). It checks 
 
 ## 4. Back up keys of drives that are already encrypted
 
-The GPO acts when a protector is created; it does not upload keys that already exist. On each client (elevated), after the GPO has applied:
+The GPO acts when a protector is created; it does not upload keys that already exist. This section is only for drives that **already have a recovery password** from before the GPO applied. A drive with no key protectors at all (*Waiting for Activation*, see [section 5](#5-encrypt-new-drives)) has nothing to back up yet. On each client (elevated), after the GPO has applied:
 
 ```powershell
 gpupdate /force
@@ -174,8 +184,26 @@ Once the GPO applies, the recovery password is escrowed however BitLocker is tur
 
 ```powershell
 Add-BitLockerKeyProtector -MountPoint C: -RecoveryPasswordProtector   # written to AD now; fails if no DC is reachable
-Enable-BitLocker -MountPoint C: -TpmProtector -UsedSpaceOnly
+Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes256 -TpmProtector -UsedSpaceOnly   # method must match the GPO
 ```
+
+> [!IMPORTANT]
+> **"Waiting for Activation" (Windows 11 device encryption).** A new Windows 11 computer is often already encrypted with XTS-AES 128 but holds only a *clear key*: `Get-BitLockerVolume C:` shows `FullyEncrypted`, protection `Off` and no key protectors. The data is encrypted but not protected, and there is no recovery password yet, so [section 4](#4-back-up-keys-of-drives-that-are-already-encrypted) has nothing to back up. To protect it, add the recovery password (stored in AD), then a TPM protector, then turn protection on. To get XTS-AES 256 instead, the drive has to be decrypted and encrypted again.
+
+**Scripted:** [`scripts/Enable-BitLockerOsDrive.ps1`](scripts/Enable-BitLockerOsDrive.ps1) handles all of these cases for the operating system drive: decrypted, *Waiting for Activation*, suspended, and (with `-ReEncrypt`) a drive encrypted with another method. It adds or backs up the recovery password and **confirms the AD object for that exact protector before any other step**, then adds the TPM protector or encrypts with the GPO's method (XTS-AES 256). It never prints or logs the recovery password. Order on a client, elevated:
+
+1. Make sure the GPO has applied: `gpupdate /target:computer`, then `gpresult /scope computer /r` lists `JMSC_BitLocker_AD_Backup`.
+2. See the plan, then run it (`-ReEncrypt` only if the drive uses another method, such as XTS-AES 128):
+
+   ```powershell
+   .\scripts\Enable-BitLockerOsDrive.ps1 -ReEncrypt -WhatIf    # plan only
+   .\scripts\Enable-BitLockerOsDrive.ps1 -ReEncrypt            # shows the plan in yellow, asks Continue? [Y/N]
+   ```
+
+3. Restart. The hardware test checks that the TPM unlocks the drive, then encryption starts (`-SkipHardwareTest` starts it at once).
+4. Run the script again: it verifies method, protectors and the recovery password in AD, and changes nothing if all is in place. Read the password from AD with [section 6](#6-find-a-recovery-password-without-a-gui).
+
+Tests (mocks, nothing on the computer or in AD is touched): `.\tests\Test-EnableBitLockerOsDrive.ps1`, in Windows PowerShell 5.1 and PowerShell 7.
 
 ---
 
