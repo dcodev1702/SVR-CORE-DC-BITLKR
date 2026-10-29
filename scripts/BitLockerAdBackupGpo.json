@@ -17,5 +17,19 @@
         "OS": 7,
         "FDV": 7,
         "RDV": 7
+    },
+    "OtherValues": {
+        "OSEncryptionType": 1,
+        "FDVEncryptionType": 1,
+        "RDVEncryptionType": 1,
+        "FDVDenyWriteAccess": 1,
+        "RDVDenyWriteAccess": 1,
+        "RDVDenyCrossOrg": 0,
+        "OSHardwareEncryption": 0,
+        "FDVHardwareEncryption": 0,
+        "RDVHardwareEncryption": 0,
+        "DisableExternalDMAUnderLock": 1,
+        "RecoveryKeyMessageSource": 2,
+        "RecoveryKeyMessage": "This drive is locked by BitLocker. Contact your IT administrator and give them the Recovery key ID shown on this screen. The recovery key is stored in Active Directory."
     }
 }

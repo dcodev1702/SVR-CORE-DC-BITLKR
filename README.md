@@ -73,7 +73,7 @@
 
 Tests (mocks, nothing in AD is touched): `.\tests\Test-SetBitLockerAdBackupGpo.ps1`, in Windows PowerShell 5.1 and PowerShell 7. They also check that the settings file matches the block below.
 
-**Lab run (2026-10-28, DC25-1):** the script created `JMSC_BitLocker_AD_Backup` with the 24 values and linked it to `OU=JMSC-WDAC-WRKSTNS`. A second run found nothing to change. On WIN11-PAW-WDAC, the computer in that OU, `gpupdate /target:computer` brought all 24 values into `HKLM\SOFTWARE\Policies\Microsoft\FVE`, and `gpresult` lists the GPO as applied. A later run the same day backed up the GPO and added the three encryption-method values (XTS-AES 256, 27 values in all); the PAW received them at its next `gpupdate`.
+**Lab run (2026-10-28, DC25-1):** the script created `JMSC_BitLocker_AD_Backup` with the 24 values and linked it to `OU=JMSC-WDAC-WRKSTNS`. A second run found nothing to change. On WIN11-PAW-WDAC, the computer in that OU, `gpupdate /target:computer` brought all 24 values into `HKLM\SOFTWARE\Policies\Microsoft\FVE`, and `gpresult` lists the GPO as applied. A later run the same day backed up the GPO and added the three encryption-method values (XTS-AES 256, 27 values in all); the PAW received them at its next `gpupdate`. A third update added the hardening values and the recovery-screen message (39 values, 2 of them under the SYSTEM key). Its first attempt stopped after 10 of 12 writes with a brief `E_ACCESSDENIED` from SYSVOL; the script now retries that error, and the next run wrote the last 2, verified all 39 and changed nothing when run again. The PAW shows all of them after `gpupdate`.
 
 ![GPMC showing the OU JMSC-WDAC-WRKSTNS with three linked GPOs: JMSC-WDAC-PAWS - AppControl Audit (link order 1, enabled), JMSC-WDAC-PAWS - AppControl Enforce (link order 2, link disabled) and JMSC_BitLocker_AD_Backup (link order 3, not enforced, link enabled, GPO status Enabled)](images/GroupPolicy-BLE-GPO.png)
 
@@ -128,10 +128,35 @@ Run the block as one piece (paste all of it, or save it as a `.ps1`). It checks 
         Set-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName $m.Key -Type DWord -Value $m.Value | Out-Null
     }
 
+    # Hardening and the recovery-screen message. The 'Deny write access ...' values live under the SYSTEM key
+    # (except RDVDenyCrossOrg, which the ADMX puts under SOFTWARE).
+    $sw  = $Key
+    $sys = 'HKLM\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE'
+    $other = @(
+        @($sw,  'OSEncryptionType', 1),               # Enforce drive encryption type: 1 = full encryption (OS drives)
+        @($sw,  'FDVEncryptionType', 1),              #   ... fixed data drives
+        @($sw,  'RDVEncryptionType', 1),              #   ... removable data drives
+        @($sys, 'FDVDenyWriteAccess', 1),             # Deny write access to fixed drives not protected by BitLocker
+        @($sys, 'RDVDenyWriteAccess', 1),             # Deny write access to removable drives not protected by BitLocker
+        @($sw,  'RDVDenyCrossOrg', 0),                #   ... but allow drives encrypted by other organizations
+        @($sw,  'OSHardwareEncryption', 0),           # Hardware-based encryption disabled: BitLocker always uses software
+        @($sw,  'FDVHardwareEncryption', 0),
+        @($sw,  'RDVHardwareEncryption', 0),
+        @($sw,  'DisableExternalDMAUnderLock', 1),    # Disable new DMA devices when this computer is locked
+        @($sw,  'RecoveryKeyMessageSource', 2),       # Pre-boot recovery screen: 2 = use custom recovery message
+        @($sw,  'RecoveryKeyMessage', 'This drive is locked by BitLocker. Contact your IT administrator and give them the Recovery key ID shown on this screen. The recovery key is stored in Active Directory.')
+    )
+    foreach ($o in $other) {
+        $type = if ($o[2] -is [string]) { 'String' } else { 'DWord' }
+        Set-GPRegistryValue -Guid $gpo.Id -Key $o[0] -ValueName $o[1] -Type $type -Value $o[2] | Out-Null
+    }
+
     New-GPLink -Guid $gpo.Id -Target $Target -LinkEnabled Yes
 
-    # Check what the GPO holds (27 values: 8 recovery values each for OS, FDV and RDV, plus 3 encryption methods)
+    # Check what the GPO holds: 39 values - 37 under the SOFTWARE key (24 recovery values, 3 encryption methods,
+    # 10 hardening and message values), 2 under the SYSTEM key
     Get-GPRegistryValue -Name $GpoName -Key $Key | Sort-Object ValueName | Format-Table ValueName, Value
+    Get-GPRegistryValue -Name $GpoName -Key $sys | Sort-Object ValueName | Format-Table ValueName, Value
 
     # Removable drives: BitLocker To Go only once the key is in AD - expect Value 1
     Get-GPRegistryValue -Name $GpoName -Key $Key -ValueName RDVRequireActiveDirectoryBackup | Format-Table ValueName, Value
@@ -149,6 +174,15 @@ Run the block as one piece (paste all of it, or save it as a `.ps1`). It checks 
 | `…ActiveDirectoryInfoToStore` | Configure storage of BitLocker recovery information to AD DS: **Store recovery passwords and key packages** |
 | `…RequireActiveDirectoryBackup` | Do not enable BitLocker until recovery information is stored to AD DS for … drives |
 | `EncryptionMethodWithXtsOs` / `…Fdv` / `…Rdv` | Policy *Choose drive encryption method and cipher strength (Windows 10 [Version 1511] and later)* = **Enabled**, **XTS-AES 256-bit** for operating system, fixed and removable drives |
+| `OSEncryptionType` / `FDVEncryptionType` / `RDVEncryptionType` = 1 | *Enforce drive encryption type on operating system / fixed data / removable data drives* = **Full encryption** |
+| `FDVDenyWriteAccess` = 1 (SYSTEM key) | *Deny write access to fixed drives not protected by BitLocker* = **Enabled** |
+| `RDVDenyWriteAccess` = 1 (SYSTEM key), `RDVDenyCrossOrg` = 0 | *Deny write access to removable drives not protected by BitLocker* = **Enabled**, without *Do not allow write access to devices configured in another organization* |
+| `OSHardwareEncryption` / `FDVHardwareEncryption` / `RDVHardwareEncryption` = 0 | *Configure use of hardware-based encryption for … drives* = **Disabled**: BitLocker always uses software encryption, not the drive's own |
+| `DisableExternalDMAUnderLock` = 1 | *Disable new DMA devices when this computer is locked* = **Enabled** |
+| `RecoveryKeyMessageSource` = 2, `RecoveryKeyMessage` | *Configure pre-boot recovery message and URL* = **Use custom recovery message** (the text in the block above) |
+
+> [!NOTE]
+> **Hardening values.** Full encryption takes longer than used-space-only, and `Enable-BitLocker -UsedSpaceOnly` is refused. Drives without BitLocker become read-only, USB sticks included, until BitLocker To Go is turned on for them, which in turn needs a reachable DC. Put your help desk's name or number into `RecoveryKeyMessage` (in the settings file) and check how it looks on one computer: the pre-boot screen supports only a limited character set. Hardware encryption and DMA protection matter on physical computers; on a Hyper-V VM they change nothing.
 
 > [!NOTE]
 > **Encryption method.** The policy applies when BitLocker starts encrypting a drive. A drive that is already encrypted keeps its method (Windows 11 device encryption uses XTS-AES 128) until it is decrypted and encrypted again ([section 5](#5-encrypt-new-drives)). A removable drive encrypted with XTS-AES can be read only on Windows 10 version 1511 or later.
@@ -184,7 +218,7 @@ Once the GPO applies, the recovery password is escrowed however BitLocker is tur
 
 ```powershell
 Add-BitLockerKeyProtector -MountPoint C: -RecoveryPasswordProtector   # written to AD now; fails if no DC is reachable
-Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes256 -TpmProtector -UsedSpaceOnly   # method must match the GPO
+Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes256 -TpmProtector   # full drive, XTS-AES 256: both as the GPO requires
 ```
 
 > [!IMPORTANT]

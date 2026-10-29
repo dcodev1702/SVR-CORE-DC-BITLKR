@@ -18,7 +18,8 @@
 # Undo an update: Restore-GPO -Guid <Id> -Path <backup folder shown in the results>.
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
 param(
-    # JSON settings (GpoName, GpoComment, OuName, Prefixes, Values). Empty = BitLockerAdBackupGpo.json next to this script.
+    # JSON settings (GpoName, GpoComment, OuName, Prefixes, Values, EncryptionMethods, OtherValues).
+    # Empty = BitLockerAdBackupGpo.json next to this script.
     [ValidatePattern('^$|^[^"*?<>|]+\.json$')][string]$SettingsPath = '',
     # Folder for the transcript, results CSV and GPO backups. Empty = %SystemDrive%\Logs.
     [ValidatePattern('^$|^[A-Za-z]:\\[^"*?<>|]+$')][string]$LogDir = '',
@@ -27,7 +28,9 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $FveKey        = 'HKLM\SOFTWARE\Policies\Microsoft\FVE'
-$AdmxFveKey    = 'SOFTWARE\Policies\Microsoft\FVE'
+$FveSystemKey  = 'HKLM\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE'   # where the 'Deny write access ...' policies live
+# ADMX key -> the Group Policy key this script writes. Hashtable lookups ignore case; the ADMX spells 'SOFTWARE' and 'Software'.
+$AdmxKeys      = @{ 'SOFTWARE\Policies\Microsoft\FVE' = $FveKey; 'SYSTEM\CurrentControlSet\Policies\Microsoft\FVE' = $FveSystemKey }
 $KnownPrefixes = @('OS', 'FDV', 'RDV')
 $KnownValues   = @('Recovery', 'ManageDRA', 'RecoveryPassword', 'RecoveryKey', 'HideRecoveryPage', 'ActiveDirectoryBackup', 'ActiveDirectoryInfoToStore', 'RequireActiveDirectoryBackup')
 $NamePattern   = '^[A-Za-z0-9][A-Za-z0-9 _.-]{0,79}$'   # GPO and OU names: no quotes, so they are safe inside AD filters
@@ -35,15 +38,16 @@ $PrefixText    = @{ OS = 'operating system'; FDV = 'fixed data'; RDV = 'removabl
 # Policy 'Choose drive encryption method and cipher strength (Windows 10 [Version 1511] and later)'
 $MethodValueNames = @{ OS = 'EncryptionMethodWithXtsOs'; FDV = 'EncryptionMethodWithXtsFdv'; RDV = 'EncryptionMethodWithXtsRdv' }
 $MethodText       = @{ 3 = 'AES-CBC 128'; 4 = 'AES-CBC 256'; 6 = 'XTS-AES 128'; 7 = 'XTS-AES 256' }
-$SettingsFields   = @('GpoName', 'GpoComment', 'OuName', 'Prefixes', 'Values', 'EncryptionMethods')
+$SettingsFields   = @('GpoName', 'GpoComment', 'OuName', 'Prefixes', 'Values', 'EncryptionMethods', 'OtherValues')
+$OtherNamePattern = '^[A-Za-z][A-Za-z0-9]{2,63}$'   # registry value names in OtherValues
 
 $Results = New-Object System.Collections.Generic.List[object]
 function Add-Result([string]$Status, [string]$Check, [string]$Detail) { $Results.Add([pscustomobject]@{ Status = $Status; Check = $Check; Detail = $Detail }) }
 
 # --- Decision logic (no system access) ---
 
-# Parse and validate the settings JSON. Returns GpoName, GpoComment, OuName, Prefixes (string[]), Values (ordered name -> int)
-# and EncryptionMethods (ordered prefix -> int).
+# Parse and validate the settings JSON. Returns GpoName, GpoComment, OuName, Prefixes (string[]), Values (ordered name -> int),
+# EncryptionMethods (ordered prefix -> int) and OtherValues (ordered registry value name -> int; checked against the ADMX later).
 function Read-Settings([string]$Text, [string]$Source) {
     try { $Raw = $Text | ConvertFrom-Json } catch { throw "STOP: $Source is not valid JSON ($($_.Exception.Message)). Nothing was changed." }
     if ($null -eq $Raw -or $Raw -isnot [System.Management.Automation.PSCustomObject]) { throw "STOP: $Source must hold one JSON object. Nothing was changed." }
@@ -94,7 +98,21 @@ function Read-Settings([string]$Text, [string]$Source) {
         $Methods[$P] = [long]$V
     }
 
-    [pscustomobject]@{ GpoName = $Raw.GpoName; GpoComment = $Raw.GpoComment; OuName = $Raw.OuName; Prefixes = $Prefixes.ToArray(); Values = $Values; EncryptionMethods = $Methods }
+    if ($Raw.OtherValues -isnot [System.Management.Automation.PSCustomObject]) { throw "STOP: OtherValues in $Source must be a JSON object of registry value name: number or text pairs (it may be empty: {}). Nothing was changed." }
+    $Other = [ordered]@{}
+    foreach ($Pr in $Raw.OtherValues.PSObject.Properties) {
+        if ($Pr.Name -notmatch $OtherNamePattern) { throw "STOP: '$($Pr.Name)' in OtherValues of $Source is not a registry value name (3-64 letters and digits). Nothing was changed." }
+        $V = $Pr.Value
+        if ($V -is [string]) {
+            # Printable ASCII only: the pre-boot recovery screen shows a limited character set, and nothing else is needed
+            if ($V.Length -eq 0 -or $V.Length -gt 1024 -or $V -cnotmatch '^[\x20-\x7E]+$') { throw "STOP: OtherValues.$($Pr.Name) in $Source must be 1-1024 printable ASCII characters. Nothing was changed." }
+            $Other[$Pr.Name] = $V
+        }
+        elseif (($V -is [int] -or $V -is [long]) -and $V -ge 0 -and $V -le 4294967295) { $Other[$Pr.Name] = [long]$V }
+        else { throw "STOP: OtherValues.$($Pr.Name) in $Source must be a whole number or text, not '$V'. Nothing was changed." }
+    }
+
+    [pscustomobject]@{ GpoName = $Raw.GpoName; GpoComment = $Raw.GpoComment; OuName = $Raw.OuName; Prefixes = $Prefixes.ToArray(); Values = $Values; EncryptionMethods = $Methods; OtherValues = $Other }
 }
 
 # 'OS XTS-AES 256, FDV XTS-AES 256' for messages
@@ -102,7 +120,9 @@ function Get-MethodSummary($Settings) {
     ($Settings.Prefixes | ForEach-Object { $T = $MethodText[[int]$Settings.EncryptionMethods[$_]]; if (-not $T) { $T = "value $($Settings.EncryptionMethods[$_])" }; "$_ $T" }) -join ', '
 }
 
-# Allowed values per registry value name under SOFTWARE\Policies\Microsoft\FVE, read from VolumeEncryption.admx
+# Registry value name -> Key (the Group Policy key it belongs under), Type (DWord, String or ExpandString), Values (allowed
+# numbers, for DWord) and MaxLength (for text), for every machine policy in VolumeEncryption.admx that writes one of the two
+# BitLocker policy keys.
 function Get-AdmxAllowedValues([string]$XmlText) {
     $Doc = New-Object System.Xml.XmlDocument
     $Doc.XmlResolver = $null   # never resolve external entities from the file
@@ -110,49 +130,85 @@ function Get-AdmxAllowedValues([string]$XmlText) {
     $Ns = New-Object System.Xml.XmlNamespaceManager($Doc.NameTable)
     $Ns.AddNamespace('p', $Doc.DocumentElement.NamespaceURI)
     $Allowed = @{}
-    foreach ($Policy in $Doc.SelectNodes("//p:policy[@key='$AdmxFveKey' and (@class='Machine' or @class='Both')]", $Ns)) {
+    foreach ($Policy in $Doc.SelectNodes('//p:policy', $Ns)) {
+        if (@('Machine', 'Both') -notcontains $Policy.GetAttribute('class')) { continue }
+        $PolicyKey = $AdmxKeys[$Policy.GetAttribute('key')]
+        if (-not $PolicyKey) { continue }
         $PolicyValue = $Policy.GetAttribute('valueName')
         if ($PolicyValue) {
             $On = $Policy.SelectSingleNode('p:enabledValue/p:decimal', $Ns); $Off = $Policy.SelectSingleNode('p:disabledValue/p:decimal', $Ns)
-            $Allowed[$PolicyValue] = @($(if ($On) { [long]$On.GetAttribute('value') } else { 1 }), $(if ($Off) { [long]$Off.GetAttribute('value') } else { 0 }))
+            $Allowed[$PolicyValue] = [pscustomobject]@{ Key = $PolicyKey; Type = 'DWord'; MaxLength = 0; Values = @($(if ($On) { [long]$On.GetAttribute('value') } else { 1 }), $(if ($Off) { [long]$Off.GetAttribute('value') } else { 0 })) }
         }
         foreach ($El in $Policy.SelectNodes('p:elements/*', $Ns)) {
             $Name = $El.GetAttribute('valueName')
             if (-not $Name) { continue }
-            if ($El.GetAttribute('key') -and $El.GetAttribute('key') -ne $AdmxFveKey) { continue }
+            $ElKey = $PolicyKey
+            if ($El.GetAttribute('key')) { $ElKey = $AdmxKeys[$El.GetAttribute('key')]; if (-not $ElKey) { continue } }
             if ($El.LocalName -eq 'boolean') {
                 $T = $El.SelectSingleNode('p:trueValue/p:decimal', $Ns); $F = $El.SelectSingleNode('p:falseValue/p:decimal', $Ns)
-                $Allowed[$Name] = @($(if ($T) { [long]$T.GetAttribute('value') } else { 1 }), $(if ($F) { [long]$F.GetAttribute('value') } else { 0 }))
+                $Allowed[$Name] = [pscustomobject]@{ Key = $ElKey; Type = 'DWord'; MaxLength = 0; Values = @($(if ($T) { [long]$T.GetAttribute('value') } else { 1 }), $(if ($F) { [long]$F.GetAttribute('value') } else { 0 })) }
             }
             elseif ($El.LocalName -eq 'enum') {
-                $Allowed[$Name] = @($El.SelectNodes('p:item/p:value/p:decimal', $Ns) | ForEach-Object { [long]$_.GetAttribute('value') })
+                $Allowed[$Name] = [pscustomobject]@{ Key = $ElKey; Type = 'DWord'; MaxLength = 0; Values = @($El.SelectNodes('p:item/p:value/p:decimal', $Ns) | ForEach-Object { [long]$_.GetAttribute('value') }) }
+            }
+            elseif ($El.LocalName -eq 'text') {
+                $Max = 1023
+                if ($El.GetAttribute('maxLength')) { $Max = [int]$El.GetAttribute('maxLength') }
+                $Type = 'String'
+                if ($El.GetAttribute('expandable') -eq 'true') { $Type = 'ExpandString' }
+                $Allowed[$Name] = [pscustomobject]@{ Key = $ElKey; Type = $Type; MaxLength = $Max; Values = @() }
             }
         }
     }
     return $Allowed
 }
 
-# Registry value name -> value: the recovery values for every prefix, then each prefix's encryption method
+# Registry value name -> value: the recovery values for every prefix, each prefix's encryption method, then OtherValues
 function Get-DesiredValues($Settings) {
     $Desired = [ordered]@{}
     foreach ($P in $Settings.Prefixes) { foreach ($Name in $Settings.Values.Keys) { $Desired["$P$Name"] = $Settings.Values[$Name] } }
     foreach ($P in $Settings.Prefixes) { $Desired[$MethodValueNames[$P]] = $Settings.EncryptionMethods[$P] }
+    foreach ($Name in $Settings.OtherValues.Keys) {
+        if ($Desired.Contains($Name)) { throw "STOP: OtherValues.$Name is already set through Values or EncryptionMethods. Set it in one place only. Nothing was changed." }
+        $Desired[$Name] = $Settings.OtherValues[$Name]
+    }
     return $Desired
 }
 
-# Desired values that the GPO does not hold yet (missing, not a DWORD, or a different number).
+# Desired values that the GPO does not hold yet (missing, under another key, another type, or a different value).
+# Keys and Types map each name to the registry key and type the ADMX gives it.
 # List helpers return plain pipeline output and callers wrap them in @(): '@(f)' around 'return , @(...)' nests the array.
-function Get-ValueChanges($Desired, $Current) {
+function Get-ValueChanges($Desired, $Current, $Keys, $Types) {
     $Changes = New-Object System.Collections.Generic.List[object]
     foreach ($Name in $Desired.Keys) {
         $Have = $Current[$Name]
-        if ($null -eq $Have) { $From = '(not set)' }
-        elseif ($Have.Type -ne 'DWord') { $From = "$($Have.Value) ($($Have.Type))" }
-        elseif ([long]$Have.Value -ne $Desired[$Name]) { $From = [string]$Have.Value }
+        $Type = $Types[$Name]
+        if ($null -eq $Have -or $Have.Key -ne $Keys[$Name]) { $From = '(not set)' }
+        elseif ($Have.Type -ne $Type) { $From = "$($Have.Value) ($($Have.Type))" }
+        elseif ($Type -eq 'DWord' -and [long]$Have.Value -ne $Desired[$Name]) { $From = [string]$Have.Value }
+        elseif ($Type -ne 'DWord' -and [string]$Have.Value -cne $Desired[$Name]) { $From = "'$($Have.Value)'" }
         else { continue }
-        $Changes.Add([pscustomobject]@{ Name = $Name; From = $From; To = $Desired[$Name] })
+        $Changes.Add([pscustomobject]@{ Name = $Name; Key = $Keys[$Name]; Type = $Type; From = $From; To = $Desired[$Name] })
     }
     $Changes.ToArray()
+}
+
+# How a change is shown in the plan: numbers as they are, text in quotes
+function Format-PolicyValue($Value) { if ($Value -is [string]) { "'$Value'" } else { [string]$Value } }
+
+# Set-GPRegistryValue rewrites Registry.pol in SYSVOL on every call. Right after a write, SYSVOL replication or a scanner can
+# hold the file for a moment, and the next call fails with E_ACCESSDENIED (seen on DC25-1 after 10 of 12 writes) or a sharing
+# violation. Those two errors are retried with a short wait; any other error stops the run at once.
+function Invoke-GpWrite([scriptblock]$Action, [int]$Tries = 5) {
+    for ($Try = 1; ; $Try++) {
+        try { & $Action; return }
+        catch {
+            $HResult = $_.Exception.HResult
+            $Transient = $HResult -eq -2147024891 -or $HResult -eq -2147024864 -or $_.Exception.Message -match '0x80070005|0x80070020'
+            if (-not $Transient -or $Try -ge $Tries) { throw }
+            Start-Sleep -Seconds (2 * $Try)
+        }
+    }
 }
 
 # --- System access (the test harness replaces these with mocks) ---
@@ -233,12 +289,14 @@ if (-not $UnderTest) {
         Get-GPO -All | Where-Object { $_.DisplayName -eq $Name } | ForEach-Object { [pscustomobject]@{ Id = [guid]$_.Id; DisplayName = [string]$_.DisplayName; GpoStatus = [string]$_.GpoStatus } }
     }
 
-    # Name -> Type/Value of every value the GPO holds under the FVE key; empty when the key does not exist yet
+    # Name -> Key/Type/Value of every value the GPO holds under the two BitLocker keys; a key that does not exist yet adds nothing
     function Get-GpoFveValues([guid]$Id) {
         $Map = @{}
-        try { $Items = @(Get-GPRegistryValue -Guid $Id -Key $FveKey -ErrorAction Stop) }
-        catch { if ($_.FullyQualifiedErrorId -like 'UnableToRetrievePolicyRegistryItem*') { return $Map } else { throw } }
-        foreach ($Item in $Items) { if ($Item.ValueName) { $Map[[string]$Item.ValueName] = [pscustomobject]@{ Type = [string]$Item.Type; Value = $Item.Value } } }
+        foreach ($Key in $FveKey, $FveSystemKey) {
+            try { $Items = @(Get-GPRegistryValue -Guid $Id -Key $Key -ErrorAction Stop) }
+            catch { if ($_.FullyQualifiedErrorId -like 'UnableToRetrievePolicyRegistryItem*') { continue } else { throw } }
+            foreach ($Item in $Items) { if ($Item.ValueName) { $Map[[string]$Item.ValueName] = [pscustomobject]@{ Key = $Key; Type = [string]$Item.Type; Value = $Item.Value } } }
+        }
         return $Map
     }
 
@@ -253,7 +311,8 @@ if (-not $UnderTest) {
         $Found = New-Object System.Collections.Generic.List[string]
         foreach ($Link in (Get-GPInheritance -Target $Target).InheritedGpoLinks) {
             if ($Link.GpoId -eq $ExcludeId) { continue }
-            if (@(Get-GPRegistryValue -Guid $Link.GpoId -Key $FveKey -ErrorAction SilentlyContinue).Count) { $Found.Add(('{0} (precedence {1}, linked at {2})' -f $Link.DisplayName, $Link.Order, $Link.Target)) }
+            $Count = @(Get-GPRegistryValue -Guid $Link.GpoId -Key $FveKey -ErrorAction SilentlyContinue).Count + @(Get-GPRegistryValue -Guid $Link.GpoId -Key $FveSystemKey -ErrorAction SilentlyContinue).Count
+            if ($Count) { $Found.Add(('{0} (precedence {1}, linked at {2})' -f $Link.DisplayName, $Link.Order, $Link.Target)) }
         }
         $Found.ToArray()
     }
@@ -276,7 +335,10 @@ if (-not $UnderTest) {
         [pscustomobject]@{ Id = [guid]$G.Id; DisplayName = [string]$G.DisplayName; GpoStatus = [string]$G.GpoStatus }
     }
 
-    function Set-EscrowValue([guid]$Id, [string]$Name, [long]$Value) { Set-GPRegistryValue -Guid $Id -Key $FveKey -ValueName $Name -Type DWord -Value ([int]$Value) | Out-Null }
+    function Set-EscrowValue([guid]$Id, [string]$Key, [string]$Name, $Value, [string]$Type) {
+        if ($Type -eq 'DWord') { $Data = [int]$Value } else { $Data = [string]$Value }
+        Set-GPRegistryValue -Guid $Id -Key $Key -ValueName $Name -Type $Type -Value $Data | Out-Null
+    }
 
     function New-EscrowLink([guid]$Id, [string]$Target) { New-GPLink -Guid $Id -Target $Target -LinkEnabled Yes | Out-Null }
 
@@ -322,12 +384,26 @@ try {
     $Allowed = Get-AdmxAllowedValues $Admx.Text
     $Desired = Get-DesiredValues $Settings
     $Bad = New-Object System.Collections.Generic.List[string]
+    $DesiredKeys = @{}
+    $DesiredTypes = @{}
     foreach ($Name in $Desired.Keys) {
-        if (-not $Allowed.ContainsKey($Name)) { $Bad.Add("$Name (not in the ADMX)") }
-        elseif (@($Allowed[$Name]) -notcontains $Desired[$Name]) { $Bad.Add("$Name = $($Desired[$Name]) (allowed: $(@($Allowed[$Name]) -join ', '))") }
+        $A = $Allowed[$Name]
+        $Want = $Desired[$Name]
+        if (-not $A) { $Bad.Add("$Name (not in the ADMX)"); continue }
+        if ($A.Type -eq 'DWord') {
+            if ($Want -is [string]) { $Bad.Add("$Name must be a number, not text"); continue }
+            if (@($A.Values) -notcontains $Want) { $Bad.Add("$Name = $Want (allowed: $(@($A.Values) -join ', '))"); continue }
+        }
+        else {
+            if ($Want -isnot [string]) { $Bad.Add("$Name must be text, not a number"); continue }
+            if ($Want.Length -gt $A.MaxLength) { $Bad.Add("$Name is $($Want.Length) characters long (at most $($A.MaxLength))"); continue }
+        }
+        $DesiredKeys[$Name] = $A.Key
+        $DesiredTypes[$Name] = $A.Type
     }
     if ($Bad.Count) { throw "STOP: settings do not match $($Admx.Path): $($Bad -join '; '). Nothing was changed." }
-    Add-Result 'PASS' 'Settings vs ADMX' ('{0} values checked against {1}' -f $Desired.Count, $Admx.Path)
+    $InSystem = @($Desired.Keys | Where-Object { $DesiredKeys[$_] -eq $FveSystemKey }).Count
+    Add-Result 'PASS' 'Settings vs ADMX' ('{0} values checked against {1}: {2} under {3}, {4} under {5}' -f $Desired.Count, $Admx.Path, ($Desired.Count - $InSystem), $FveKey, $InSystem, $FveSystemKey)
     if ($Admx.CentralStore -eq 'MissingFile') {
         Add-Result 'WARN' 'Central store' ("\\{0}\SYSVOL\{0}\Policies\PolicyDefinitions has no VolumeEncryption.admx, so GPMC shows these values under Extra Registry Settings (clients still apply them). Copy %SystemRoot%\PolicyDefinitions\VolumeEncryption.admx and en-US\VolumeEncryption.adml there to see them as the normal BitLocker settings." -f $Domain.DNSRoot)
     }
@@ -357,7 +433,7 @@ try {
         $LinkState = 'None'
         Add-Result 'PASS' 'GPO' "'$($Settings.GpoName)' does not exist yet"
     }
-    $Changes = @(Get-ValueChanges $Desired $Current)
+    $Changes = @(Get-ValueChanges $Desired $Current $DesiredKeys $DesiredTypes)
 
     $ExcludeId = [guid]::Empty
     if ($Gpo) { $ExcludeId = $Gpo.Id }
@@ -379,8 +455,14 @@ try {
             if ($NeedCreate) { $Detail.Add("GPO: create '$($Settings.GpoName)' - $($Settings.GpoComment)") }
             else { $Detail.Add("GPO: update '$($Gpo.DisplayName)' ($($Gpo.Id)); it is backed up first") }
             if ($Changes.Count) {
-                $Detail.Add("Values under $FveKey ($($Changes.Count) of $($Desired.Count)):")
-                foreach ($C in $Changes) { $Detail.Add(('  {0} : {1} -> {2}' -f $C.Name, $C.From, $C.To)) }
+                $Detail.Add("Policy values to set ($($Changes.Count) of $($Desired.Count)):")
+                foreach ($K in $FveKey, $FveSystemKey) {
+                    $InKey = @($Changes | Where-Object { $_.Key -eq $K })
+                    if ($InKey.Count) {
+                        $Detail.Add("  under $K")
+                        foreach ($C in $InKey) { $Detail.Add(('    {0} : {1} -> {2}' -f $C.Name, $C.From, (Format-PolicyValue $C.To))) }
+                    }
+                }
             }
             if ($NeedLink) { $Detail.Add("Link: new, enabled, on $Target") }
             if ($NeedEnable) { $Detail.Add("Link: enable the existing, disabled link on $Target") }
@@ -391,6 +473,11 @@ try {
             }
             $Detail.Add("        Drives encrypted from then on use: $(Get-MethodSummary $Settings). Drives that are already encrypted keep")
             $Detail.Add('        their method until they are decrypted and encrypted again.')
+            $Full = @('OS', 'FDV', 'RDV' | Where-Object { $Desired["$($_)EncryptionType"] -eq 1 })
+            if ($Full.Count) { $Detail.Add("        Whole-drive encryption is required (used-space-only is refused) for: $($Full -join ', ').") }
+            if ($Desired['FDVDenyWriteAccess'] -eq 1) { $Detail.Add('        Fixed data drives without BitLocker become read-only.') }
+            if ($Desired['RDVDenyWriteAccess'] -eq 1) { $Detail.Add('        Removable drives without BitLocker become read-only.') }
+            if ($Desired['RecoveryKeyMessageSource'] -eq 2 -and $Desired['RecoveryKeyMessage']) { $Detail.Add("        The recovery screen shows: '$($Desired['RecoveryKeyMessage'])'") }
             if ($NeedCreate) { $Detail.Add("Undo: Remove-GPO -Name '$($Settings.GpoName)'   (also removes its links)") }
             else { $Detail.Add("Undo: Restore-GPO -Guid $($Gpo.Id) -Path <the backup folder listed in the results>") }
             Confirm-Change -NoConfirm:$NoConfirm -Action "create or update the BitLocker AD DS backup GPO in $($Domain.DNSRoot)" -Detail $Detail.ToArray()
@@ -412,8 +499,8 @@ try {
             else { Add-Result 'PASS' 'GPO' "-WhatIf: would create '$($Settings.GpoName)'" }
         }
         if ($Changes.Count) {
-            if ($Gpo -and $PSCmdlet.ShouldProcess("GPO '$($Settings.GpoName)'", "Set $($Changes.Count) value(s) under $FveKey")) {
-                foreach ($C in $Changes) { Set-EscrowValue $Gpo.Id $C.Name $C.To }
+            if ($Gpo -and $PSCmdlet.ShouldProcess("GPO '$($Settings.GpoName)'", "Set $($Changes.Count) BitLocker policy value(s)")) {
+                foreach ($C in $Changes) { Invoke-GpWrite { Set-EscrowValue $Gpo.Id $C.Key $C.Name $C.To $C.Type } }
                 Add-Result 'PASS' 'Values set' "$($Changes.Count) value(s)"
             }
             else { Add-Result 'PASS' 'Values' "-WhatIf: would set $($Changes.Count) value(s)" }
@@ -430,9 +517,9 @@ try {
     # 6. Verify from AD and SYSVOL (also when nothing had to change)
     if ($Gpo -and -not $WhatIfPreference) {
         $After = Get-GpoFveValues $Gpo.Id
-        $Wrong = @(Get-ValueChanges $Desired $After)
-        if ($Wrong.Count) { Add-Result 'FAIL' 'Verify values' (($Wrong | ForEach-Object { '{0} is {1}, expected {2}' -f $_.Name, $_.From, $_.To }) -join '; ') }
-        else { Add-Result 'PASS' 'Verify values' ('all {0} values match (DWORD) in GPO {1}' -f $Desired.Count, $Gpo.Id) }
+        $Wrong = @(Get-ValueChanges $Desired $After $DesiredKeys $DesiredTypes)
+        if ($Wrong.Count) { Add-Result 'FAIL' 'Verify values' (($Wrong | ForEach-Object { '{0} is {1}, expected {2}' -f $_.Name, $_.From, (Format-PolicyValue $_.To) }) -join '; ') }
+        else { Add-Result 'PASS' 'Verify values' ('all {0} values match (key, type and value) in GPO {1}' -f $Desired.Count, $Gpo.Id) }
         $LinkAfter = Get-GpoLinkState $Target $Gpo.Id
         if ($LinkAfter -eq 'Enabled') { Add-Result 'PASS' 'Verify link' "enabled on $Target" }
         else { Add-Result 'FAIL' 'Verify link' "the link on $Target is '$LinkAfter', expected 'Enabled'" }

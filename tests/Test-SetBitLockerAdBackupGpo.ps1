@@ -61,6 +61,27 @@ $RMethods = @([regex]::Matches([regex]::Match($Block, '\$methods = \[ordered\]@\
 $SMethods = @($Settings.EncryptionMethods.PSObject.Properties | ForEach-Object { '{0}={1}' -f $MethodNames[$_.Name], $_.Value }) -join ','
 Assert-That ($RMethods -ceq $SMethods) 'README = settings: encryption methods' "README '$RMethods' / settings '$SMethods'"
 
+# Each value's Group Policy key according to the real ADMX - written independently of the script's parser
+$SwKey = 'HKLM\SOFTWARE\Policies\Microsoft\FVE'
+$SysKey = 'HKLM\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE'
+$AdmxDoc = New-Object System.Xml.XmlDocument; $AdmxDoc.LoadXml($AdmxText)
+$AdmxNs = New-Object System.Xml.XmlNamespaceManager($AdmxDoc.NameTable); $AdmxNs.AddNamespace('p', $AdmxDoc.DocumentElement.NamespaceURI)
+function Get-AdmxKeyOf([string]$Name) {
+    $El = $AdmxDoc.SelectSingleNode("//p:policy/p:elements/*[@valueName='$Name']", $AdmxNs)
+    $Key = ''
+    if ($El -and $El.GetAttribute('key')) { $Key = $El.GetAttribute('key') }
+    elseif ($El) { $Key = $El.ParentNode.ParentNode.GetAttribute('key') }
+    else { $Pol = $AdmxDoc.SelectSingleNode("//p:policy[@valueName='$Name']", $AdmxNs); if ($Pol) { $Key = $Pol.GetAttribute('key') } }
+    if ($Key -eq 'SOFTWARE\Policies\Microsoft\FVE') { return $SwKey }
+    if ($Key -eq 'SYSTEM\CurrentControlSet\Policies\Microsoft\FVE') { return $SysKey }
+    return "(not found: '$Key')"
+}
+$ROther = @([regex]::Matches($Block, '@\(\$(sw|sys),\s*''(\w+)'',\s*(\d+|''[^'']*'')\)') | ForEach-Object { [pscustomobject]@{ Key = $(if ($_.Groups[1].Value -eq 'sys') { $SysKey } else { $SwKey }); Name = $_.Groups[2].Value; Value = $_.Groups[3].Value.Trim("'") } })
+$SOther = @($Settings.OtherValues.PSObject.Properties | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -join ','
+Assert-That ((@($ROther | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -join ',') -ceq $SOther) 'README = settings: other values in the same order' "settings '$SOther'"
+$KeyErrors = @($ROther | Where-Object { (Get-AdmxKeyOf $_.Name) -ne $_.Key } | ForEach-Object { "$($_.Name): README $($_.Key), ADMX $(Get-AdmxKeyOf $_.Name)" })
+Assert-That ($KeyErrors.Count -eq 0) 'README keys of the other values match the ADMX' ($KeyErrors -join '; ')
+
 # --- 2. Harness: real confirmation gate, mocked system access ---
 $Global:GpoScriptTestHarness = $true
 . (Join-Path $ScriptDir 'Confirm-Change.ps1')
@@ -70,6 +91,13 @@ $GpoId = [guid]'0a1b2c3d-1111-2222-3333-444455556666'
 $Desired = [ordered]@{}
 foreach ($P in $Settings.Prefixes) { foreach ($Pr in $Settings.Values.PSObject.Properties) { $Desired["$P$($Pr.Name)"] = [long]$Pr.Value } }
 foreach ($P in $Settings.Prefixes) { $Desired[$MethodNames[$P]] = [long]$Settings.EncryptionMethods.$P }
+foreach ($Pr in $Settings.OtherValues.PSObject.Properties) { $Desired[$Pr.Name] = $Pr.Value }
+$DesiredCount = $Desired.Count
+# A value as the GPO would hold it
+function V($Value, [string]$Name) {
+    $Type = 'DWord'; if ($Value -is [string]) { $Type = 'String' }
+    [pscustomobject]@{ Key = (Get-AdmxKeyOf $Name); Type = $Type; Value = $Value }
+}
 
 function Test-Interactive { $Global:M.Interactive }
 function Read-Host { param([string]$Prompt) $Global:M.ReadHostCalls++; if ($Global:M.Answers.Count -gt 0) { $Global:M.Answers.Dequeue() } else { '' } }
@@ -90,9 +118,11 @@ function Backup-ExistingGpo { [CmdletBinding()] param([guid]$Id, [string]$Path) 
 function New-EscrowGpo { [CmdletBinding()] param([string]$Name, [string]$Comment)
     $Global:M.Calls.Add('NewGpo'); $Global:M.Created = "$Name|$Comment"
     $G = [pscustomobject]@{ Id = $GpoId; DisplayName = $Name; GpoStatus = 'AllSettingsEnabled' }; $Global:M.Gpos = @($G); $G }
-function Set-EscrowValue { [CmdletBinding()] param([guid]$Id, [string]$Name, [long]$Value)
-    $Global:M.Calls.Add('Set'); $Global:M.SetLog.Add("$Name=$Value")
-    if (-not $Global:M.SetIsNoop) { $Global:M.Values[$Name] = [pscustomobject]@{ Type = 'DWord'; Value = [int]$Value } } }
+function Set-EscrowValue { [CmdletBinding()] param([guid]$Id, [string]$Key, [string]$Name, $Value, [string]$Type)
+    $Global:M.Calls.Add('Set')
+    if ($Global:M.SetFailures.Count -gt 0 -and $Global:M.Calls.Count -eq $Global:M.FailAtCall) { throw $Global:M.SetFailures.Dequeue() }
+    $Global:M.SetLog.Add("$Name=$Value"); $Global:M.KeyLog.Add("$Name|$Key|$Type")
+    if (-not $Global:M.SetIsNoop) { $Global:M.Values[$Name] = [pscustomobject]@{ Key = $Key; Type = $Type; Value = $Value } } }
 function New-EscrowLink { [CmdletBinding()] param([guid]$Id, [string]$Target) $Global:M.Calls.Add('NewLink'); $Global:M.LinkTarget = $Target; if (-not $Global:M.LinkIsNoop) { $Global:M.Link = 'Enabled' } }
 function Enable-EscrowLink { [CmdletBinding()] param([guid]$Id, [string]$Target) $Global:M.Calls.Add('EnableLink'); if (-not $Global:M.LinkIsNoop) { $Global:M.Link = 'Enabled' } }
 
@@ -105,13 +135,15 @@ function Reset-Mock {
         Gpos = @(); Values = @{}; Link = 'None'; Competitors = @()
         DsVersion = 25; SysvolVersion = 25; PolHash = ('AB' * 32)
         Calls = New-Object System.Collections.Generic.List[string]; SetLog = New-Object System.Collections.Generic.List[string]
+        KeyLog = New-Object System.Collections.Generic.List[string]
+        SetFailures = New-Object System.Collections.Queue; FailAtCall = 0
         Created = ''; LinkTarget = ''; SetIsNoop = $false; LinkIsNoop = $false
     }
 }
-# The GPO exists, holds every desired value and is linked
+# The GPO exists, holds every desired value (right key and type) and is linked
 function Set-Compliant {
     $Global:M.Gpos = @([pscustomobject]@{ Id = $GpoId; DisplayName = $Settings.GpoName; GpoStatus = 'AllSettingsEnabled' })
-    foreach ($K in $Desired.Keys) { $Global:M.Values[$K] = [pscustomobject]@{ Type = 'DWord'; Value = [int]$Desired[$K] } }
+    foreach ($K in $Desired.Keys) { $Global:M.Values[$K] = V $Desired[$K] $K }
     $Global:M.Link = 'Enabled'
 }
 function Set-Answers([string[]]$List) { $Global:M.Interactive = $true; foreach ($A in $List) { $Global:M.Answers.Enqueue($A) } }
@@ -161,30 +193,36 @@ function Invoke-Case {
     if ($Problems.Count) { Write-Host $Out }
 }
 $NC = @{ NoConfirm = $true }
-$Fresh = 'NewGpo,Set*27,NewLink'
+$Fresh = 'NewGpo,Set*{0},NewLink' -f $DesiredCount
 
 # --- 3. Confirmation gate ---
-Invoke-Case 'Fresh, -NoConfirm: create GPO, set 27 values, link' -Params $NC -ExpectCalls $Fresh -ExpectReadHost 0 -ExpectText 'Verify values', 'Verify link', 'Registry.pol SHA-256', 'encryption OS XTS-AES 256, FDV XTS-AES 256, RDV XTS-AES 256' -Extra {
+Invoke-Case "Fresh, -NoConfirm: create GPO, set $DesiredCount values, link" -Params $NC -ExpectCalls $Fresh -ExpectReadHost 0 -ExpectText 'Verify values', "all $DesiredCount values match (key, type and value)", 'Verify link', 'Registry.pol SHA-256', 'encryption OS XTS-AES 256, FDV XTS-AES 256, RDV XTS-AES 256' -Extra {
     if ($Global:M.Created -cne "$($Settings.GpoName)|$($Settings.GpoComment)") { return "created '$($Global:M.Created)'" }
     if ($Global:M.LinkTarget -cne $OuDn) { return "linked to '$($Global:M.LinkTarget)'" }
     if (-not $Global:M.SetLog.Contains('RDVRequireActiveDirectoryBackup=1')) { return 'RDVRequireActiveDirectoryBackup=1 was not set' }
-    foreach ($N in 'EncryptionMethodWithXtsOs=7', 'EncryptionMethodWithXtsFdv=7', 'EncryptionMethodWithXtsRdv=7') { if (-not $Global:M.SetLog.Contains($N)) { return "$N was not set" } }
+    foreach ($N in 'EncryptionMethodWithXtsOs=7', 'EncryptionMethodWithXtsFdv=7', 'EncryptionMethodWithXtsRdv=7', 'OSEncryptionType=1', 'RDVDenyWriteAccess=1', 'OSHardwareEncryption=0', 'DisableExternalDMAUnderLock=1') { if (-not $Global:M.SetLog.Contains($N)) { return "$N was not set" } }
+    foreach ($N in "FDVDenyWriteAccess|$SysKey|DWord", "RDVDenyWriteAccess|$SysKey|DWord", "RDVDenyCrossOrg|$SwKey|DWord", "DisableExternalDMAUnderLock|$SwKey|DWord", "RecoveryKeyMessageSource|$SwKey|DWord", "RecoveryKeyMessage|$SwKey|String", "OSRecovery|$SwKey|DWord") {
+        if (-not $Global:M.KeyLog.Contains($N)) { return "not written as $N" } }
+    if ($Global:M.Values['RecoveryKeyMessage'].Value -cne $Settings.OtherValues.RecoveryKeyMessage) { return 'recovery message text differs' }
     if (-not $Global:M.OuQueries.Contains('JMSC-WDAC-WRKSTNS|DC=skynet-home,DC=local')) { return "OU query was [$($Global:M.OuQueries -join '; ')]" } }
-Invoke-Case 'Interactive Y: shows scope and effect, then applies' -Setup { Set-Answers 'Y' } -ExpectCalls $Fresh -ExpectReadHost 1 -ExpectText 'Applies to: 1 computer(s) in that OU: WIN11-PAW-WDAC', 'operating system, fixed data, removable data drives', 'Drives encrypted from then on use: OS XTS-AES 256', "Undo: Remove-GPO -Name 'JMSC_BitLocker_AD_Backup'"
+Invoke-Case 'Interactive Y: shows scope and effect, then applies' -Setup { Set-Answers 'Y' } -ExpectCalls $Fresh -ExpectReadHost 1 -ExpectText 'Applies to: 1 computer(s) in that OU: WIN11-PAW-WDAC', 'operating system, fixed data, removable data drives', 'Drives encrypted from then on use: OS XTS-AES 256', "Undo: Remove-GPO -Name 'JMSC_BitLocker_AD_Backup'", "under $SysKey", 'RDVDenyWriteAccess : (not set) -> 1', 'Whole-drive encryption is required (used-space-only is refused) for: OS, FDV, RDV', 'Removable drives without BitLocker become read-only', "The recovery screen shows: 'This drive is locked by BitLocker."
 Invoke-Case 'Interactive yes -> applies' -Setup { Set-Answers 'yes' } -ExpectCalls $Fresh -ExpectReadHost 1
 Invoke-Case 'Interactive N -> STOP, nothing changed' -Setup { Set-Answers 'N' } -ExpectExit 1 -ExpectReadHost 1 -ExpectText 'not confirmed'
 Invoke-Case 'Interactive invalid x3 -> STOP' -Setup { Set-Answers 'maybe', 'x', '' } -ExpectExit 1 -ExpectReadHost 3 -ExpectText 'not confirmed'
 Invoke-Case 'Interactive invalid then Y -> applies' -Setup { Set-Answers 'ok', 'Y' } -ExpectCalls $Fresh -ExpectReadHost 2
 Invoke-Case 'Non-interactive without -NoConfirm -> STOP' -ExpectExit 1 -ExpectReadHost 0 -ExpectText 'non-interactive'
-Invoke-Case '-WhatIf -> plan only' -Params @{ WhatIf = $true } -ExpectReadHost 0 -ExpectText 'would create', 'would set 27', 'would link'
+Invoke-Case '-WhatIf -> plan only' -Params @{ WhatIf = $true } -ExpectReadHost 0 -ExpectText 'would create', "would set $DesiredCount", 'would link'
 Invoke-Case 'Already compliant -> no prompt, no change, verified' -Setup { Set-Answers 'Y'; Set-Compliant } -ExpectReadHost 0 -ExpectText 'nothing to change', 'Verify values', 'Verify link'
 
 # --- 4. Existing GPO ---
-Invoke-Case 'One value differs -> backup, set 1' -Params $NC -Setup { Set-Compliant; $Global:M.Values['RDVRequireActiveDirectoryBackup'] = [pscustomobject]@{ Type = 'DWord'; Value = 0 } } -ExpectCalls 'Backup,Set' -ExpectText 'RDVRequireActiveDirectoryBackup : 0 -> 1' -Extra { if (($Global:M.SetLog -join ',') -ne 'RDVRequireActiveDirectoryBackup=1') { "set [$($Global:M.SetLog -join ',')]" } }
-Invoke-Case 'Value stored as a string -> rewritten as DWORD' -Params $NC -Setup { Set-Compliant; $Global:M.Values['OSRecovery'] = [pscustomobject]@{ Type = 'String'; Value = '1' } } -ExpectCalls 'Backup,Set' -ExpectText 'OSRecovery : 1 (String) -> 1'
+Invoke-Case 'One value differs -> backup, set 1' -Params $NC -Setup { Set-Compliant; $Global:M.Values['RDVRequireActiveDirectoryBackup'] = V 0 'RDVRequireActiveDirectoryBackup' } -ExpectCalls 'Backup,Set' -ExpectText 'RDVRequireActiveDirectoryBackup : 0 -> 1' -Extra { if (($Global:M.SetLog -join ',') -ne 'RDVRequireActiveDirectoryBackup=1') { "set [$($Global:M.SetLog -join ',')]" } }
+Invoke-Case 'Value stored as a string -> rewritten as DWORD' -Params $NC -Setup { Set-Compliant; $Global:M.Values['OSRecovery'] = V '1' 'OSRecovery' } -ExpectCalls 'Backup,Set' -ExpectText 'OSRecovery : 1 (String) -> 1'
+Invoke-Case 'Deny-write value under the SOFTWARE key -> written under the SYSTEM key' -Params $NC -Setup { Set-Compliant; $Global:M.Values['FDVDenyWriteAccess'] = [pscustomobject]@{ Key = $SwKey; Type = 'DWord'; Value = 1 } } -ExpectCalls 'Backup,Set' -ExpectText 'FDVDenyWriteAccess : (not set) -> 1' -Extra { if (-not $Global:M.KeyLog.Contains("FDVDenyWriteAccess|$SysKey|DWord")) { "written as [$($Global:M.KeyLog -join ',')]" } }
+Invoke-Case 'Recovery message differs -> rewritten' -Params $NC -Setup { Set-Compliant; $Global:M.Values['RecoveryKeyMessage'] = V 'Call the help desk.' 'RecoveryKeyMessage' } -ExpectCalls 'Backup,Set' -ExpectText "RecoveryKeyMessage : 'Call the help desk.' -> 'This drive is locked"
+Invoke-Case 'Recovery message as REG_EXPAND_SZ -> rewritten as string' -Params $NC -Setup { Set-Compliant; $Global:M.Values['RecoveryKeyMessage'] = [pscustomobject]@{ Key = $SwKey; Type = 'ExpandString'; Value = $Settings.OtherValues.RecoveryKeyMessage } } -ExpectCalls 'Backup,Set' -Extra { if (-not $Global:M.KeyLog.Contains("RecoveryKeyMessage|$SwKey|String")) { "written as [$($Global:M.KeyLog -join ',')]" } }
 Invoke-Case 'Link disabled -> enabled, no backup' -Params $NC -Setup { Set-Compliant; $Global:M.Link = 'Disabled' } -ExpectCalls 'EnableLink' -ExpectText 'enable the existing, disabled link'
 Invoke-Case 'Not linked -> linked, no backup' -Params $NC -Setup { Set-Compliant; $Global:M.Link = 'None' } -ExpectCalls 'NewLink'
-Invoke-Case 'Extra value in the GPO -> WARN, left alone' -Params $NC -Setup { Set-Compliant; $Global:M.Values['OSEncryptionType'] = [pscustomobject]@{ Type = 'DWord'; Value = 1 } } -ExpectText 'WARN Other GPO values', 'OSEncryptionType'
+Invoke-Case 'Extra value in the GPO -> WARN, left alone' -Params $NC -Setup { Set-Compliant; $Global:M.Values['UseAdvancedStartup'] = V 1 'UseAdvancedStartup' } -ExpectText 'WARN Other GPO values', 'UseAdvancedStartup'
 Invoke-Case '-WhatIf on an existing GPO -> plan only' -Params @{ WhatIf = $true } -Setup { Set-Compliant; $Global:M.Values.Remove('FDVRecovery') } -ExpectText 'would set 1'
 Invoke-Case 'GPO computer settings disabled -> STOP' -Params $NC -Setup { Set-Compliant; $Global:M.Gpos[0].GpoStatus = 'ComputerSettingsDisabled' } -ExpectExit 1 -ExpectText 'computer settings disabled'
 Invoke-Case 'Two GPOs with the name -> STOP' -Params $NC -Setup { Set-Compliant; $Global:M.Gpos = @($Global:M.Gpos[0], [pscustomobject]@{ Id = [guid]::NewGuid(); DisplayName = $Settings.GpoName; GpoStatus = 'AllSettingsEnabled' }) } -ExpectExit 1 -ExpectText '2 GPOs are named'
@@ -213,6 +251,16 @@ Invoke-Case 'Negative value -> STOP' -Params $NC -Setup { $Global:M.SettingsText
 Invoke-Case 'ActiveDirectoryBackup 0 -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Values.ActiveDirectoryBackup = 0 } } -ExpectExit 1 -ExpectText 'must be 1'
 Invoke-Case 'Value outside the ADMX (RecoveryPassword 3) -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Values.RecoveryPassword = 3 } } -ExpectExit 1 -ExpectText 'OSRecoveryPassword = 3 (allowed: 2, 1, 0)'
 Invoke-Case 'ActiveDirectoryInfoToStore 0 (not in the ADMX) -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Values.ActiveDirectoryInfoToStore = 0 } } -ExpectExit 1 -ExpectText 'ActiveDirectoryInfoToStore = 0'
+Invoke-Case 'OtherValues missing -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.PSObject.Properties.Remove('OtherValues') } } -ExpectExit 1 -ExpectText "no 'OtherValues'"
+Invoke-Case 'OtherValues repeats a generated value -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.OtherValues | Add-Member -NotePropertyName OSRecovery -NotePropertyValue 1 } } -ExpectExit 1 -ExpectText 'already set through Values or EncryptionMethods'
+Invoke-Case 'OtherValues name not in the ADMX -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.OtherValues | Add-Member -NotePropertyName NoSuchValue -NotePropertyValue 1 } } -ExpectExit 1 -ExpectText 'NoSuchValue (not in the ADMX)'
+Invoke-Case 'OtherValues name with a dash -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.OtherValues | Add-Member -NotePropertyName 'Bad-Name' -NotePropertyValue 1 } } -ExpectExit 1 -ExpectText 'is not a registry value name'
+Invoke-Case 'OSEncryptionType 3 (not in the ADMX) -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.OtherValues.OSEncryptionType = 3 } } -ExpectExit 1 -ExpectText 'OSEncryptionType = 3 (allowed: 0, 1, 2)'
+Invoke-Case 'Text for a number value -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.OtherValues.FDVDenyWriteAccess = 'yes' } } -ExpectExit 1 -ExpectText 'FDVDenyWriteAccess must be a number'
+Invoke-Case 'Number for the text value -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.OtherValues.RecoveryKeyMessage = 5 } } -ExpectExit 1 -ExpectText 'RecoveryKeyMessage must be text'
+Invoke-Case 'Recovery message over the ADMX limit (900) -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.OtherValues.RecoveryKeyMessage = ('x' * 901) } } -ExpectExit 1 -ExpectText 'at most 900'
+Invoke-Case 'Recovery message with a non-ASCII character -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.OtherValues.RecoveryKeyMessage = 'Caf' + [char]0xE9 } } -ExpectExit 1 -ExpectText 'printable ASCII'
+Invoke-Case 'Recovery message with a tab -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.OtherValues.RecoveryKeyMessage = "a`tb" } } -ExpectExit 1 -ExpectText 'printable ASCII'
 Invoke-Case 'EncryptionMethods missing -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.PSObject.Properties.Remove('EncryptionMethods') } } -ExpectExit 1 -ExpectText "no 'EncryptionMethods'"
 Invoke-Case 'EncryptionMethods for a drive type not in Prefixes -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Prefixes = @('OS', 'FDV') } } -ExpectExit 1 -ExpectText 'must name exactly the drive types'
 Invoke-Case 'EncryptionMethods missing a drive type -> STOP' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.EncryptionMethods.PSObject.Properties.Remove('FDV') } } -ExpectExit 1 -ExpectText 'must name exactly the drive types'
@@ -235,14 +283,22 @@ Invoke-Case 'Two OUs with the name -> STOP' -Params $NC -Setup { $Global:M.Ous =
 Invoke-Case '-SettingsPath that is not .json -> rejected before the script runs' -Params @{ NoConfirm = $true; SettingsPath = 'C:\cfg\settings.txt' } -ExpectExit 99 -ExpectText 'SettingsPath'
 
 # --- 6. Other settings and warnings ---
-Invoke-Case 'Only OS and FDV -> 18 values' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Prefixes = @('OS', 'FDV'); $O.EncryptionMethods.PSObject.Properties.Remove('RDV') } } -ExpectCalls 'NewGpo,Set*18,NewLink' -Extra { if (@($Global:M.SetLog | Where-Object { $_ -like 'RDV*' -or $_ -like '*Rdv=*' }).Count) { 'an RDV value was set' } }
+$OsFdvCount = 16 + 2 + @($Settings.OtherValues.PSObject.Properties).Count
+Invoke-Case "Only OS and FDV -> $OsFdvCount values (OtherValues stay as listed)" -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.Prefixes = @('OS', 'FDV'); $O.EncryptionMethods.PSObject.Properties.Remove('RDV') } } -ExpectCalls ('NewGpo,Set*{0},NewLink' -f $OsFdvCount) -Extra { if (@($Global:M.SetLog | Where-Object { $_ -like 'RDVRecovery*' -or $_ -like 'RDVRequireActiveDirectoryBackup=*' -or $_ -like 'EncryptionMethodWithXtsRdv=*' }).Count) { 'an RDV recovery value or method was set' } }
+Invoke-Case 'OtherValues empty -> recovery values and methods only' -Params $NC -Setup { $Global:M.SettingsText = Edit-Settings { param($O) $O.OtherValues = New-Object PSObject } } -ExpectCalls 'NewGpo,Set*27,NewLink'
 Invoke-Case 'Another GPO sets BitLocker values -> WARN, still applies' -Params $NC -Setup { $Global:M.Competitors = @('Old BitLocker (precedence 1, linked at DC=skynet-home,DC=local)') } -ExpectCalls $Fresh -ExpectText 'WARN Other BitLocker GPOs'
 Invoke-Case 'OU without computers -> WARN, still applies' -Params $NC -Setup { $Global:M.Computers = @() } -ExpectCalls $Fresh -ExpectText 'holds no computer objects'
 Invoke-Case 'AD and SYSVOL versions differ -> WARN' -Params $NC -Setup { Set-Compliant; $Global:M.SysvolVersion = 24 } -ExpectText 'replication may still be running'
 Invoke-Case 'Central store without this ADMX -> WARN, still applies' -Params $NC -Setup { $Global:M.Admx.CentralStore = 'MissingFile' } -ExpectCalls $Fresh -ExpectText 'WARN Central store', 'Extra Registry Settings'
 Invoke-Case 'Central store has this ADMX -> no central-store warning' -Params $NC -ExpectCalls $Fresh -Extra { if ($Hay -match 'WARN Central store') { 'unexpected central-store warning' } }
 
-# --- 7. Verification from the system ---
+# --- 7. Transient SYSVOL errors while writing (seen on DC25-1: E_ACCESSDENIED after 10 of 12 writes) ---
+Invoke-Case 'Access denied once while writing -> retried, all values set' -Params $NC -Setup {
+    $Global:M.FailAtCall = 12; $Global:M.SetFailures.Enqueue([System.UnauthorizedAccessException]::new('Access is denied. (Exception from HRESULT: 0x80070005 (E_ACCESSDENIED))')) } -ExpectCalls ('NewGpo,Set*{0},NewLink' -f ($DesiredCount + 1)) -ExpectText "all $DesiredCount values match"
+Invoke-Case 'Other error while writing -> FAIL at once, no retry' -Params $NC -Setup {
+    $Global:M.FailAtCall = 2; $Global:M.SetFailures.Enqueue([System.InvalidOperationException]::new('The GPO was deleted.')) } -ExpectExit 1 -ExpectCalls 'NewGpo,Set' -ExpectText 'The GPO was deleted.'
+
+# --- 8. Verification from the system ---
 Invoke-Case 'Values do not stick -> FAIL' -Params $NC -Setup { $Global:M.SetIsNoop = $true } -ExpectExit 1 -ExpectCalls $Fresh -ExpectText 'FAIL Verify values'
 Invoke-Case 'Link does not stick -> FAIL' -Params $NC -Setup { $Global:M.LinkIsNoop = $true } -ExpectExit 1 -ExpectCalls $Fresh -ExpectText 'FAIL Verify link'
 Invoke-Case 'Registry.pol missing -> FAIL' -Params $NC -Setup { Set-Compliant; $Global:M.PolHash = '' } -ExpectExit 1 -ExpectText 'FAIL Registry.pol'
