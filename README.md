@@ -4,7 +4,7 @@
 > Domain-joined Windows computers can write their **BitLocker recovery passwords and key packages** to **their own computer object in AD DS**. This repository sets that up from a **Server Core 2025 domain controller** with in-box PowerShell only — **no GPMC console, no GUI, no downloads**: one GPO for the clients, a one-time backfill for drives that were encrypted before the GPO existed, and key lookup with `Get-ADObject`. **The domain controller needs no schema extension, no ACL change and no extra role.**
 
 > [!IMPORTANT]
-> **Status (2026-10-28): work in progress.** [Section 3](#3-create-the-gpo-server-core-powershell) has run in the lab with its script against a Server Core 2025 DC, and the policy reached a client (see that section). Sections 4–6 and the remaining scripts come next ([Roadmap](#roadmap)). The policy registry value names and values are checked against `VolumeEncryption.admx` / `.adml` as shipped with Windows. Link the GPO to a test OU first.
+> **Status (2026-10-29): work in progress.** [Section 3](#3-create-the-gpo-server-core-powershell) and [section 5](#5-encrypt-new-drives) have run in the lab with their scripts: the GPO on a Server Core 2025 DC, and BitLocker on a Windows 11 client, with its recovery password in AD (see those sections). Sections 4 and 6 and the remaining scripts come next ([Roadmap](#roadmap)). The policy registry value names and values are checked against `VolumeEncryption.admx` / `.adml` as shipped with Windows. Link the GPO to a test OU first.
 
 ---
 
@@ -27,7 +27,7 @@
 ## 1. How it works
 
 1. A GPO enables the *Choose how BitLocker-protected … drives can be recovered* policies on the clients (`HKLM\SOFTWARE\Policies\Microsoft\FVE`).
-2. When BitLocker creates a **recovery password** protector, the client writes it to AD DS with its computer account: a child object of class `msFVE-RecoveryInformation` under its own computer object, named `<timestamp>{<recovery password ID>}`.
+2. When BitLocker is turned on with a **recovery password** protector, or such a protector is added while BitLocker is on, the client writes it to AD DS with its computer account: a child object of class `msFVE-RecoveryInformation` under its own computer object, named `<timestamp>{<recovery password ID>}` (for example `2026-10-29T07:31:53+01:00{0034D722-…}`).
 3. With *Do not enable BitLocker until recovery information is stored to AD DS*, the client will not start encryption if that write fails, so no drive is encrypted without its key in AD.
 4. Administrators read the key from AD: `Get-ADObject` on Server Core, or the BitLocker Recovery Password Viewer (RSAT) on a computer with a GUI.
 
@@ -222,7 +222,7 @@ Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes256 -TpmProtector   # fu
 ```
 
 > [!NOTE]
-> **When the password reaches AD.** On a drive where BitLocker is already on (encrypted, including *Waiting for Activation*), a new recovery password is written to AD as it is created. On a **decrypted** drive it is not: BitLocker cannot back up yet (`Backup-BitLockerKeyProtector` fails with `FVE_E_NOT_ACTIVATED`), and writes the password to AD when encryption is turned on. With `RequireActiveDirectoryBackup = 1` it does not encrypt unless that write succeeds. Seen on WIN11-PAW-WDAC: on the decrypted drive the protector was created (event 775), and no AD object appeared.
+> **When the password reaches AD.** On a drive where BitLocker is already on (encrypted, including *Waiting for Activation*), a new recovery password is written to AD as it is created. On a **decrypted** drive it is not: BitLocker cannot back up yet (`Backup-BitLockerKeyProtector` fails with `FVE_E_NOT_ACTIVATED`), and writes the password to AD when encryption is turned on. With `RequireActiveDirectoryBackup = 1` it does not encrypt unless that write succeeds. Seen on WIN11-PAW-WDAC: on the decrypted drive the protector was created (event 775) and no AD object appeared; `Enable-BitLocker` then wrote it to AD (event 784, *recovery information was backed up successfully to Active Directory Domain Services*) **before the restart**, and only after that scheduled encryption (event 769).
 
 > [!IMPORTANT]
 > **"Waiting for Activation" (Windows 11 device encryption).** A new Windows 11 computer is often already encrypted with XTS-AES 128 but holds only a *clear key*: `Get-BitLockerVolume C:` shows `FullyEncrypted`, protection `Off` and no key protectors. The data is encrypted but not protected, and there is no recovery password yet, so [section 4](#4-back-up-keys-of-drives-that-are-already-encrypted) has nothing to back up. To protect it, add the recovery password (stored in AD), then a TPM protector, then turn protection on. To get XTS-AES 256 instead, the drive has to be decrypted and encrypted again.
@@ -241,6 +241,13 @@ Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes256 -TpmProtector   # fu
 4. Run the script again: it verifies method, protectors and the recovery password in AD, and changes nothing if all is in place. If BitLocker only writes the password to AD when encryption starts, this is the run that confirms it. Read the password from AD with [section 6](#6-find-a-recovery-password-without-a-gui).
 
 Tests (mocks, nothing on the computer or in AD is touched): `.\tests\Test-EnableBitLockerOsDrive.ps1`, in Windows PowerShell 5.1 and PowerShell 7.
+
+**Lab run (2026-10-29, WIN11-PAW-WDAC, a Hyper-V VM with a virtual TPM):** C: started *Waiting for Activation* with XTS-AES 128. The script stopped safely twice on the way, and both cases are now built in:
+
+- With `-ReEncrypt` it decrypted C: and added a recovery password, but stopped because no AD object appeared: on a decrypted drive BitLocker writes the password only when it is turned on (see the note above).
+- The next run was refused with `0x80310030`: the Windows ISO was still in the VM's DVD drive. The script now checks for a disc or ISO before the first change.
+
+With the ISO removed and the VM restarted, the run added the recovery password, turned BitLocker on with XTS-AES 256 and the TPM, and confirmed the AD object `2026-10-29T07:31:53+01:00{0034D722-…}` (event 784) before the restart. After the restart: `FullyEncrypted`, XTS-AES 256, 100 %, protection **On**, protectors TPM and recovery password. A final run found nothing to change, and no recovery password appeared in its output or logs.
 
 ---
 
@@ -305,14 +312,16 @@ Only needed if you also want to encrypt the DC's own drives.
 | No `msFVE-RecoveryInformation` object appears | On the client: `gpresult /scope computer /r` lists the GPO; `Get-ItemProperty HKLM:\SOFTWARE\Policies\Microsoft\FVE` shows the values; the volume has a `RecoveryPassword` protector; for drives encrypted earlier, the backfill ([section 4](#4-back-up-keys-of-drives-that-are-already-encrypted)) ran. |
 | `Add-BitLockerKeyProtector` / `Enable-BitLocker` fails with an AD backup error | No DC reachable — `RequireActiveDirectoryBackup` is doing its job. Fix name resolution / connectivity and retry. |
 | `New-GPLink` fails on `CN=Computers` | Containers cannot take GPO links. Use an OU, or the domain root. |
+| `Enable-BitLocker` fails with `0x80310030` (*bootable media (CD or DVD)*) | A disc or ISO is in an optical drive. Remove it (Hyper-V host: `Get-VMDvdDrive -VMName <vm> \| Set-VMDvdDrive -Path $null`), restart, run again. |
+| Recovery password added, but no AD object | Normal on a decrypted drive: BitLocker writes it to AD when it is turned on (event 784). `Backup-BitLockerKeyProtector` cannot help there (`FVE_E_NOT_ACTIVATED`). |
 | `Get-ADObject` returns the object but no password | The account cannot read the confidential attribute ([section 7](#7-who-can-read-the-keys)). |
-| What did BitLocker do? | `Get-WinEvent -LogName 'Microsoft-Windows-BitLocker/BitLocker Management' -MaxEvents 20` (Event Viewer: *Applications and Services Logs → Microsoft → Windows → BitLocker-API → Management*). |
+| What did BitLocker do? | `Get-WinEvent -LogName 'Microsoft-Windows-BitLocker/BitLocker Management' -MaxEvents 20` (Event Viewer: *Applications and Services Logs → Microsoft → Windows → BitLocker-API → Management*). Seen in the lab: 775 key protector created, 784 recovery information backed up to AD DS, 769 encryption will start at the next restart, 770 decryption started. |
 
 ---
 
 ## Roadmap
 
-- [ ] Run sections 3–6 in the lab against a Server Core 2025 DC and record the results here (section 3: done 2026-10-28).
+- [ ] Run sections 3–6 in the lab against a Server Core 2025 DC and record the results here (section 3: done 2026-10-28; section 5: done 2026-10-29).
 - [x] Script the GPO creation (settings file, `-WhatIf`): [`scripts/Set-BitLockerAdBackupGpo.ps1`](scripts/Set-BitLockerAdBackupGpo.ps1).
 - [ ] Script the backfill for a list of computers.
 - [ ] Script key lookup by computer name or recovery key ID.
