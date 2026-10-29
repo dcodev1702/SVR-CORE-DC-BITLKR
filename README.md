@@ -217,14 +217,17 @@ foreach ($vol in Get-BitLockerVolume | Where-Object VolumeStatus -ne 'FullyDecry
 Once the GPO applies, the recovery password is escrowed however BitLocker is turned on (Control Panel, `manage-bde`, PowerShell). A TPM-only drive has **no** recovery password, so there would be nothing to escrow — add the recovery password protector first:
 
 ```powershell
-Add-BitLockerKeyProtector -MountPoint C: -RecoveryPasswordProtector   # written to AD now; fails if no DC is reachable
+Add-BitLockerKeyProtector -MountPoint C: -RecoveryPasswordProtector   # on a decrypted drive: created, not yet in AD
 Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes256 -TpmProtector   # full drive, XTS-AES 256: both as the GPO requires
 ```
+
+> [!NOTE]
+> **When the password reaches AD.** On a drive where BitLocker is already on (encrypted, including *Waiting for Activation*), a new recovery password is written to AD as it is created. On a **decrypted** drive it is not: BitLocker cannot back up yet (`Backup-BitLockerKeyProtector` fails with `FVE_E_NOT_ACTIVATED`), and writes the password to AD when encryption is turned on. With `RequireActiveDirectoryBackup = 1` it does not encrypt unless that write succeeds. Seen on WIN11-PAW-WDAC: on the decrypted drive the protector was created (event 775), and no AD object appeared.
 
 > [!IMPORTANT]
 > **"Waiting for Activation" (Windows 11 device encryption).** A new Windows 11 computer is often already encrypted with XTS-AES 128 but holds only a *clear key*: `Get-BitLockerVolume C:` shows `FullyEncrypted`, protection `Off` and no key protectors. The data is encrypted but not protected, and there is no recovery password yet, so [section 4](#4-back-up-keys-of-drives-that-are-already-encrypted) has nothing to back up. To protect it, add the recovery password (stored in AD), then a TPM protector, then turn protection on. To get XTS-AES 256 instead, the drive has to be decrypted and encrypted again.
 
-**Scripted:** [`scripts/Enable-BitLockerOsDrive.ps1`](scripts/Enable-BitLockerOsDrive.ps1) handles all of these cases for the operating system drive: decrypted, *Waiting for Activation*, suspended, and (with `-ReEncrypt`) a drive encrypted with another method. It adds or backs up the recovery password and **confirms the AD object for that exact protector before any other step**, then adds the TPM protector or encrypts with the GPO's method (XTS-AES 256). It never prints or logs the recovery password. Order on a client, elevated:
+**Scripted:** [`scripts/Enable-BitLockerOsDrive.ps1`](scripts/Enable-BitLockerOsDrive.ps1) handles all of these cases for the operating system drive: decrypted, *Waiting for Activation*, suspended, and (with `-ReEncrypt`) a drive encrypted with another method. On a drive where BitLocker is already on, it adds or backs up the recovery password and **confirms the AD object for that exact protector before any other step**. On a decrypted drive it adds the recovery password, encrypts with the GPO's method (XTS-AES 256) and the TPM, and then confirms the AD object; BitLocker itself refuses to encrypt without it. It never prints or logs the recovery password. Order on a client, elevated:
 
 1. Make sure the GPO has applied: `gpupdate /target:computer`, then `gpresult /scope computer /r` lists `JMSC_BitLocker_AD_Backup`.
 2. See the plan, then run it (`-ReEncrypt` only if the drive uses another method, such as XTS-AES 128):
@@ -235,7 +238,7 @@ Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes256 -TpmProtector   # fu
    ```
 
 3. Restart. The hardware test checks that the TPM unlocks the drive, then encryption starts (`-SkipHardwareTest` starts it at once).
-4. Run the script again: it verifies method, protectors and the recovery password in AD, and changes nothing if all is in place. Read the password from AD with [section 6](#6-find-a-recovery-password-without-a-gui).
+4. Run the script again: it verifies method, protectors and the recovery password in AD, and changes nothing if all is in place. If BitLocker only writes the password to AD when encryption starts, this is the run that confirms it. Read the password from AD with [section 6](#6-find-a-recovery-password-without-a-gui).
 
 Tests (mocks, nothing on the computer or in AD is touched): `.\tests\Test-EnableBitLockerOsDrive.ps1`, in Windows PowerShell 5.1 and PowerShell 7.
 

@@ -80,13 +80,16 @@ function Add-RecoveryPasswordProtector { [CmdletBinding()] param([string]$Drive)
     if ($Global:M.AddRpFails) { throw 'BitLocker could not back up the recovery information to Active Directory Domain Services.' }
     $Id = '{' + [guid]::NewGuid().ToString().ToUpperInvariant() + '}'
     $Global:M.Vol.Protectors = @($Global:M.Vol.Protectors) + @([pscustomobject]@{ Id = $Id; Type = 'RecoveryPassword' })
-    if ($Global:M.Escrow) { $Global:M.AdIds.Add($Id) }
+    # As seen on WIN11-PAW-WDAC: on a decrypted drive the protector is created, but nothing is written to AD yet
+    if ($Global:M.Escrow -and $Global:M.Vol.VolumeStatus -ne 'FullyDecrypted') { $Global:M.AdIds.Add($Id) }
     $Global:M.NewRp = $Id
     $Id }
 function Backup-RecoveryPassword { [CmdletBinding()] param([string]$Drive, [string]$Id) $Global:M.Calls.Add('BackupRp'); if ($Global:M.Escrow) { $Global:M.AdIds.Add($Id) } }
 function Add-TpmProtector { [CmdletBinding()] param([string]$Drive) $Global:M.Calls.Add('AddTpm'); $Global:M.Vol.Protectors = @($Global:M.Vol.Protectors) + @([pscustomobject]@{ Id = $TpmId; Type = 'Tpm' }) }
 function Enable-OsEncryption { [CmdletBinding()] param([string]$Drive, [string]$Method, [bool]$UsedOnly, [bool]$SkipTest)
     $Global:M.Calls.Add('Enable'); $Global:M.EnableArgs = "$Method|$UsedOnly|$SkipTest"
+    # Turning BitLocker on writes the recovery passwords to AD (EscrowAtEnable = $false: only once encryption starts)
+    if ($Global:M.EscrowAtEnable) { foreach ($P in @($Global:M.Vol.Protectors | Where-Object { $_.Type -eq 'RecoveryPassword' })) { if (-not $Global:M.AdIds.Contains($P.Id)) { $Global:M.AdIds.Add($P.Id) } } }
     $Global:M.Vol.Protectors = @($Global:M.Vol.Protectors) + @([pscustomobject]@{ Id = $TpmId; Type = 'Tpm' })
     if ($SkipTest) { $Global:M.Vol.VolumeStatus = 'EncryptionInProgress'; $Global:M.Vol.EncryptionMethod = $Method; $Global:M.Vol.EncryptionPercentage = 1 } else { $Global:M.Hw = 'Pending' } }
 function Resume-Protection { [CmdletBinding()] param([string]$Drive) $Global:M.Calls.Add('Resume'); if (-not $Global:M.ResumeNoop) { $Global:M.Vol.ProtectionStatus = 'On' } }
@@ -99,7 +102,7 @@ function Reset-Mock {
     $Global:M = @{
         Interactive = $false; Answers = New-Object System.Collections.Queue; ReadHostCalls = 0
         Admin = $true; ModulesFail = $false; Joined = $true; NoDc = $false; Dn = $Dn
-        AdIds = New-Object System.Collections.Generic.List[string]; Escrow = $true; AddRpFails = $false
+        AdIds = New-Object System.Collections.Generic.List[string]; Escrow = $true; EscrowAtEnable = $true; AddRpFails = $false
         Pol = @{ OSRecovery = 1; OSActiveDirectoryBackup = 1; OSRequireActiveDirectoryBackup = 1; OSRecoveryPassword = 2; EncryptionMethodWithXtsOs = 7 }
         TpmPresent = $true; TpmReady = $true; SecureBoot = $true; WinRe = 'Enabled'; Hw = 'None'
         Vol = New-Vol 'FullyEncrypted' 'XtsAes128' 'Off' @()      # this PAW: device encryption, Waiting for Activation, XTS-AES 128
@@ -146,11 +149,15 @@ $RE = @{ NoConfirm = $true; ReEncrypt = $true }
 
 # --- 3. This PAW's state: XTS-AES 128, Waiting for Activation ---
 Invoke-Case 'PAW state without -ReEncrypt -> STOP: method differs' -Params $NC -ExpectExit 1 -ExpectText 'encrypted with XtsAes128, not XtsAes256', '-ReEncrypt'
-Invoke-Case 'PAW state, -ReEncrypt: decrypt, wait, recovery password in AD, encrypt XTS-AES 256' -Params $RE -ExpectCalls 'Decrypt,Wait,AddRp,Enable' -ExpectText 'found in AD on DC25-1', 'hardware test pending', 'NEXT: Restart' -Extra {
+Invoke-Case 'PAW state, -ReEncrypt: decrypt, wait, recovery password, encrypt XTS-AES 256, password in AD' -Params $RE -ExpectCalls 'Decrypt,Wait,AddRp,Enable' -ExpectText 'BitLocker writes it to AD when encryption is turned on', 'PASS Verify recovery password', 'hardware test pending', 'NEXT: Restart' -Extra {
     if ($Global:M.EnableArgs -ne 'XtsAes256|False|False') { return "Enable args '$($Global:M.EnableArgs)'" }
     if (-not $Global:M.AdIds.Contains($Global:M.NewRp)) { return 'the new recovery password is not in AD' } }
 Invoke-Case 'PAW state, -ReEncrypt -UsedSpaceOnly -SkipHardwareTest: encryption starts now' -Params @{ NoConfirm = $true; ReEncrypt = $true; UsedSpaceOnly = $true; SkipHardwareTest = $true } -ExpectCalls 'Decrypt,Wait,AddRp,Enable' -ExpectText 'Verify method', 'XtsAes256 (EncryptionInProgress' -Extra { if ($Global:M.EnableArgs -ne 'XtsAes256|True|True') { "Enable args '$($Global:M.EnableArgs)'" } }
-Invoke-Case 'PAW state, -ReEncrypt, interactive Y: plan shows the risk' -Params @{ ReEncrypt = $true } -Setup { Set-Answers 'Y' } -ExpectCalls 'Decrypt,Wait,AddRp,Enable' -ExpectReadHost 1 -ExpectText '1. decrypt C:', 'NOT encrypted until encryption completes again', '3. add a recovery password'
+Invoke-Case 'PAW state, -ReEncrypt, interactive Y: plan shows the risk' -Params @{ ReEncrypt = $true } -Setup { Set-Answers 'Y' } -ExpectCalls 'Decrypt,Wait,AddRp,Enable' -ExpectReadHost 1 -ExpectText '1. decrypt C:', 'NOT encrypted until encryption completes again', '3. add a recovery password; BitLocker writes it to AD when the next step turns encryption on'
+Invoke-Case 'This PAW after the first run: decrypted, recovery password not in AD -> encrypt, then found in AD' -Params $NC -Setup { $Global:M.Vol = New-Vol 'FullyDecrypted' 'None' 'Off' @((P 'RecoveryPassword' $RpId)) } -ExpectCalls 'Enable' -ExpectText "Verify recovery password $RpId in AD", 'hardware test pending' -Extra { if (-not $Global:M.AdIds.Contains($RpId)) { 'the recovery password did not reach AD' } }
+Invoke-Case 'Decrypted, BitLocker writes to AD only when encryption starts -> WARN, run again after the restart' -Params $NC -Setup { $Global:M.Vol = New-Vol 'FullyDecrypted' 'None' 'Off' @(); $Global:M.EscrowAtEnable = $false } -ExpectCalls 'AddRp,Enable' -ExpectText 'WARN Verify recovery password', 'Run this script again after the restart'
+Invoke-Case 'Encryption started now (-SkipHardwareTest) but password not in AD -> FAIL' -Params @{ NoConfirm = $true; SkipHardwareTest = $true } -Setup { $Global:M.Vol = New-Vol 'FullyDecrypted' 'None' 'Off' @(); $Global:M.EscrowAtEnable = $false } -ExpectExit 1 -ExpectCalls 'AddRp,Enable' -ExpectText 'FAIL Verify recovery password'
+Invoke-Case 'Restart pending, password not in AD yet -> WARN, no backup attempt' -Params $NC -Setup { $Global:M.Vol = New-Vol 'FullyDecrypted' 'None' 'Off' @((P 'RecoveryPassword' $RpId), (P 'Tpm' $TpmId)); $Global:M.Hw = 'Pending' } -ExpectText 'WARN Plan', 'NEXT: Restart'
 Invoke-Case 'Interactive N -> STOP, nothing changed' -Params @{ ReEncrypt = $true } -Setup { Set-Answers 'N' } -ExpectExit 1 -ExpectReadHost 1 -ExpectText 'not confirmed'
 Invoke-Case 'Interactive invalid x3 -> STOP' -Params @{ ReEncrypt = $true } -Setup { Set-Answers 'maybe', 'x', '' } -ExpectExit 1 -ExpectReadHost 3
 Invoke-Case 'Non-interactive without -NoConfirm -> STOP' -Params @{ ReEncrypt = $true } -ExpectExit 1 -ExpectReadHost 0 -ExpectText 'non-interactive'
@@ -174,7 +181,7 @@ Invoke-Case 'Paused encryption -> STOP' -Params $NC -Setup { $Global:M.Vol = New
 Invoke-Case 'Decryption still running at the deadline -> WARN, stops before the recovery password' -Params $RE -Setup { $Global:M.DecryptTimesOut = $true } -ExpectCalls 'Decrypt,Wait' -ExpectText 'WARN Decryption', 'Run this script again with -ReEncrypt'
 
 # --- 5. The recovery password must be in AD before anything else ---
-Invoke-Case 'Recovery password never appears in AD -> FAIL, drive not encrypted' -Params $NC -Setup { $Global:M.Vol = New-Vol 'FullyDecrypted' 'None' 'Off' @(); $Global:M.Escrow = $false } -ExpectExit 1 -ExpectCalls 'AddRp' -ExpectText 'no AD object for it appeared'
+Invoke-Case 'Encrypted drive: recovery password never appears in AD -> STOP before the TPM protector' -Params $NC -Setup { $Global:M.Vol = New-Vol 'FullyEncrypted' 'XtsAes256' 'Off' @(); $Global:M.Escrow = $false } -ExpectExit 1 -ExpectCalls 'AddRp' -ExpectText 'no AD object for it appeared'
 Invoke-Case 'Adding the recovery password fails (AD backup) -> FAIL, nothing after it' -Params $NC -Setup { $Global:M.Vol = New-Vol 'FullyEncrypted' 'XtsAes256' 'Off' @(); $Global:M.AddRpFails = $true } -ExpectExit 1 -ExpectCalls 'AddRp' -ExpectText 'adding the recovery password failed'
 Invoke-Case 'Backup never appears in AD -> FAIL' -Params $NC -Setup { Set-Compliant; $Global:M.AdIds.Clear(); $Global:M.Escrow = $false } -ExpectExit 1 -ExpectCalls 'BackupRp' -ExpectText 'was backed up, but no AD object'
 Invoke-Case 'Protection does not turn on -> FAIL from the re-read' -Params $NC -Setup { $Global:M.Vol = New-Vol 'FullyEncrypted' 'XtsAes256' 'Off' @(); $Global:M.ResumeNoop = $true } -ExpectExit 1 -ExpectCalls 'AddRp,AddTpm,Resume' -ExpectText 'FAIL Verify protection'

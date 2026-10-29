@@ -3,8 +3,12 @@
 #
 # In order - each step runs only after the one before it succeeded:
 #   1. Checks: elevation, OS drive, domain-joined and a DC answers, the AD backup policy (GPO) is applied, TPM ready.
-#   2. Recovery password: add one (the GPO writes it to AD as it is created) or back up an existing one, then confirm
-#      in AD that the object for that exact protector exists. Nothing else happens until it does.
+#   2. Recovery password. When BitLocker is on for the drive (encrypted, incl. 'Waiting for Activation'): add one or back
+#      up an existing one, then confirm in AD that the object for that exact protector exists before any other step.
+#      When the drive is decrypted, BitLocker cannot back up yet (FVE_E_NOT_ACTIVATED): the password is added, and
+#      BitLocker writes it to AD when step 3 turns it on - with RequireActiveDirectoryBackup = 1 it does not encrypt
+#      unless that write succeeds. The script then looks for the AD object; if the hardware test is still pending, it
+#      may only appear once encryption starts after the restart, so run the script again then to confirm it.
 #   3. TPM protector and protection:
 #        - decrypted drive         -> Enable-BitLocker with the encryption method (XTS-AES 256 by default) and the TPM.
 #                                     Encryption starts after the restart that runs the hardware test (-SkipHardwareTest: now).
@@ -293,8 +297,10 @@ try {
     if ($Mode -eq 'ReEncrypt' -or $Mode -eq 'WaitThenEncrypt') { $Steps.Add('WaitDecrypt') }
     $Rps = @($Vol.Protectors | Where-Object { $_.Type -eq 'RecoveryPassword' })
     $RpNotInAd = @($Rps | Where-Object { $AdIds -notcontains $_.Id })
+    # Decrypted when its recovery password is added: BitLocker stores it in AD only when encryption is turned on
+    $Decrypted = @('Encrypt', 'ReEncrypt', 'WaitThenEncrypt', 'PendingRestart') -contains $Mode
     if ($Mode -eq 'ReEncrypt' -or $Mode -eq 'WaitThenEncrypt' -or $Rps.Count -eq 0) { $Steps.Add('AddRecoveryPassword') }
-    elseif ($RpNotInAd.Count) { $Steps.Add('BackupRecoveryPassword') }
+    elseif ($RpNotInAd.Count -and -not $Decrypted) { $Steps.Add('BackupRecoveryPassword') }
     if ($Mode -eq 'Encrypt' -or $Mode -eq 'ReEncrypt' -or $Mode -eq 'WaitThenEncrypt') { $Steps.Add('Encrypt') }
     if ($Mode -eq 'Activate') {
         if (@($Vol.Protectors | Where-Object { $_.Type -like 'Tpm*' }).Count -eq 0) { $Steps.Add('AddTpm') }
@@ -303,7 +309,11 @@ try {
 
     if ($Steps.Count -eq 0) {
         if ($Mode -eq 'InProgress') { Add-Result 'PASS' 'Plan' ('encryption with {0} is in progress ({1:N0}%); recovery password stored in AD - nothing to change' -f $Vol.EncryptionMethod, $Vol.EncryptionPercentage) }
-        elseif ($Mode -eq 'PendingRestart') { Add-Result 'PASS' 'Plan' 'recovery password stored in AD; the hardware test is pending - restart to start encryption'; $Restart = 'Restart the computer: the hardware test runs, then encryption starts.' }
+        elseif ($Mode -eq 'PendingRestart') {
+            if ($RpNotInAd.Count) { Add-Result 'WARN' 'Plan' 'the hardware test is pending and the recovery password is not in AD yet: BitLocker writes it when encryption starts after the restart, and does not encrypt without it' }
+            else { Add-Result 'PASS' 'Plan' 'recovery password stored in AD; the hardware test is pending - restart to start encryption' }
+            $Restart = 'Restart the computer: the hardware test runs, then encryption starts. Run this script again afterwards to confirm the recovery password in AD.'
+        }
         else { Add-Result 'PASS' 'Plan' "protection is on with $($Vol.EncryptionMethod), TPM and recovery password; the recovery password is in AD - nothing to change" }
     }
     else {
@@ -312,7 +322,7 @@ try {
             $Words = @{
                 Decrypt = "decrypt $MountPoint (Disable-BitLocker removes all protectors; its data is NOT encrypted until encryption completes again)"
                 WaitDecrypt = "wait up to $DecryptWaitMinutes minutes for decryption to finish"
-                AddRecoveryPassword = 'add a recovery password; the GPO writes it to AD, and this script confirms the AD object before going on'
+                AddRecoveryPassword = $(if ($Decrypted) { 'add a recovery password; BitLocker writes it to AD when the next step turns encryption on, and does not encrypt if that fails' } else { 'add a recovery password; the GPO writes it to AD, and this script confirms the AD object before going on' })
                 BackupRecoveryPassword = 'back up the existing recovery password to AD and confirm the AD object'
                 Encrypt = ('encrypt with {0} and a TPM protector ({1}{2})' -f $EncryptionMethod, $(if ($UsedSpaceOnly) { 'used space only' } else { 'full drive' }), $(if ($SkipHardwareTest) { ', starting now' } else { ', starting after the restart that tests TPM unlock' }))
                 AddTpm = 'add a TPM protector (it replaces the clear key of a drive that is Waiting for Activation)'
@@ -323,7 +333,7 @@ try {
             $Detail.Add(('Drive now: {0} {1}, {2}, protection {3}, protectors: {4}' -f $MountPoint, $Vol.VolumeStatus, $Vol.EncryptionMethod, $Vol.ProtectionStatus, (Format-Protectors $Vol)))
             $N = 0
             foreach ($S in $Steps) { $N++; $Detail.Add(('  {0}. {1}' -f $N, $Words[$S])) }
-            $Detail.Add('Effect: the recovery password is stored in AD before anything else; read it with README section 6.')
+            $Detail.Add('Effect: no encryption without the recovery password in AD; read it with README section 6.')
             $Detail.Add("Undo: Disable-BitLocker -MountPoint $MountPoint (decrypts the drive). The recovery password stays in AD.")
             Confirm-Change -NoConfirm:$NoConfirm -Action "turn on BitLocker for $MountPoint on $ComputerName" -Detail $Detail.ToArray()
             $ConfirmPreference = 'None'
@@ -351,8 +361,11 @@ try {
                 try { $NewId = Add-RecoveryPasswordProtector $MountPoint }
                 catch { throw "STOP: adding the recovery password failed ($($_.Exception.Message)). With RequireActiveDirectoryBackup = 1 this usually means it could not be written to AD. No further step was run." }
                 if (-not $NewId) { throw 'STOP: the new recovery password protector was not found on the drive. No further step was run.' }
-                if (-not (Wait-AdRecoveryId $Dc $ComputerDn $NewId $AdWaitSeconds)) { throw "STOP: recovery password $NewId was added, but no AD object for it appeared on $Dc within $AdWaitSeconds seconds. Check AD (README section 6) before going on; no further step was run." }
-                Add-Result 'PASS' 'Recovery password' "$NewId added and found in AD on $Dc"
+                if ($Decrypted) { Add-Result 'PASS' 'Recovery password' "$NewId added; BitLocker writes it to AD when encryption is turned on" }
+                else {
+                    if (-not (Wait-AdRecoveryId $Dc $ComputerDn $NewId $AdWaitSeconds)) { throw "STOP: recovery password $NewId was added, but no AD object for it appeared on $Dc within $AdWaitSeconds seconds. Check AD (README section 6) before going on; no further step was run." }
+                    Add-Result 'PASS' 'Recovery password' "$NewId added and found in AD on $Dc"
+                }
             }
             elseif ($S -eq 'BackupRecoveryPassword') {
                 if (-not $PSCmdlet.ShouldProcess($MountPoint, 'Back up the recovery password to AD')) { Add-Result 'PASS' 'Recovery password' "-WhatIf: would back up $(($RpNotInAd | ForEach-Object { $_.Id }) -join ', ') to AD"; continue }
@@ -366,7 +379,7 @@ try {
                 if (-not $PSCmdlet.ShouldProcess($MountPoint, "Enable-BitLocker $EncryptionMethod with TPM")) { Add-Result 'PASS' 'Encrypt' "-WhatIf: would encrypt with $EncryptionMethod and a TPM protector"; continue }
                 Enable-OsEncryption $MountPoint $EncryptionMethod ([bool]$UsedSpaceOnly) ([bool]$SkipHardwareTest)
                 Add-Result 'PASS' 'Encrypt' "Enable-BitLocker with $EncryptionMethod and a TPM protector"
-                if (-not $SkipHardwareTest) { $Restart = 'Restart the computer: the hardware test checks that the TPM unlocks the drive, then encryption starts. Run this script again afterwards to verify.' }
+                if (-not $SkipHardwareTest) { $Restart = 'Restart the computer: the hardware test checks that the TPM unlocks the drive, then encryption starts. Run this script again afterwards to confirm the recovery password in AD.' }
             }
             elseif ($S -eq 'AddTpm') {
                 if (-not $PSCmdlet.ShouldProcess($MountPoint, 'Add a TPM protector')) { Add-Result 'PASS' 'TPM protector' '-WhatIf: would add one'; continue }
@@ -385,9 +398,14 @@ try {
             $After = Get-OsVolumeState $MountPoint
             $AfterIds = @(Find-AdRecoveryIds $Dc $ComputerDn)
             $AfterRps = @($After.Protectors | Where-Object { $_.Type -eq 'RecoveryPassword' })
-            $Missing = @($AfterRps | Where-Object { $AfterIds -notcontains $_.Id })
+            # Give AD a moment for a password that BitLocker wrote when encryption was turned on just now
+            $Missing = @($AfterRps | Where-Object { $AfterIds -notcontains $_.Id -and -not (Wait-AdRecoveryId $Dc $ComputerDn $_.Id $AdWaitSeconds) })
+            $MissingText = ($Missing | ForEach-Object { $_.Id }) -join ', '
             if ($AfterRps.Count -eq 0) { Add-Result 'FAIL' 'Verify recovery password' "$MountPoint has no recovery password protector" }
-            elseif ($Missing.Count) { Add-Result 'FAIL' 'Verify recovery password' "not in AD: $(($Missing | ForEach-Object { $_.Id }) -join ', ')" }
+            elseif ($Missing.Count -and $After.VolumeStatus -eq 'FullyDecrypted' -and (Get-HardwareTestStatus $MountPoint) -eq 'Pending') {
+                Add-Result 'WARN' 'Verify recovery password' "$MissingText is not in AD yet. BitLocker writes it when encryption starts after the restart and does not encrypt without it (RequireActiveDirectoryBackup = 1). Run this script again after the restart to confirm it in AD."
+            }
+            elseif ($Missing.Count) { Add-Result 'FAIL' 'Verify recovery password' "not in AD: $MissingText" }
             else { Add-Result 'PASS' 'Verify recovery password' "$(($AfterRps | ForEach-Object { $_.Id }) -join ', ') in AD" }
             if (@($After.Protectors | Where-Object { $_.Type -like 'Tpm*' }).Count -eq 0) { Add-Result 'FAIL' 'Verify TPM protector' "$MountPoint has no TPM protector" }
             else { Add-Result 'PASS' 'Verify TPM protector' 'present' }
