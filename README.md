@@ -1,4 +1,4 @@
-# SVR-CORE-DC-BITLKR — BitLocker recovery keys in Active Directory (Windows Server 2025, Server Core)
+# SVR-CORE-DC-BITLKR — BitLocker recovery keys in Active Directory (Windows Server Core 2025/2022)
 
 > [!NOTE]
 > Domain-joined Windows computers can write their **BitLocker recovery passwords and key packages** to **their own computer object in AD DS**. This repository sets that up from a **Server Core 2025 domain controller** with in-box PowerShell only — **no GPMC console, no GUI, no downloads**: one GPO for the clients, a one-time backfill for drives that were encrypted before the GPO existed, and key lookup with `Get-ADObject`. **The domain controller needs no schema extension, no ACL change and no extra role.**
