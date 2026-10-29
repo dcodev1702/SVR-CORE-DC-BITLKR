@@ -67,7 +67,7 @@
 Import-Module GroupPolicy
 
 $GpoName = 'JMSC_BitLocker_AD_Backup'
-$Target  = 'OU=JMSC-WDAC-WRKSTNS,DC=contoso,DC=com'     # your client OU, or the domain root
+$Target  = 'OU=JMSC-WDAC-WRKSTNS,DC=skynet-home,DC=local'     # your client OU, or the domain root
 $Key     = 'HKLM\SOFTWARE\Policies\Microsoft\FVE'
 
 $gpo = New-GPO -Name $GpoName -Comment 'BitLocker: escrow recovery passwords and key packages to AD DS'
