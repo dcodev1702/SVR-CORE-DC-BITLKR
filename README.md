@@ -82,7 +82,7 @@ $values = [ordered]@{
     ActiveDirectoryInfoToStore   = 1   # 1 = recovery passwords and key packages, 2 = recovery passwords only
     RequireActiveDirectoryBackup = 1   # Do not enable BitLocker until recovery information is stored to AD DS
 }
-foreach ($prefix in 'OS', 'FDV') {     # add 'RDV' for removable drives, see below
+foreach ($prefix in 'OS', 'FDV', 'RDV') {     # added 'RDV' for removable drives, see below
     foreach ($v in $values.GetEnumerator()) {
         Set-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName "$prefix$($v.Key)" -Type DWord -Value $v.Value | Out-Null
     }
@@ -90,8 +90,11 @@ foreach ($prefix in 'OS', 'FDV') {     # add 'RDV' for removable drives, see bel
 
 New-GPLink -Guid $gpo.Id -Target $Target -LinkEnabled Yes
 
-# Check what the GPO holds
+# Check what the GPO holds (24 values: 8 each for OS, FDV and RDV)
 Get-GPRegistryValue -Name $GpoName -Key $Key | Sort-Object ValueName | Format-Table ValueName, Value
+
+# Removable drives: BitLocker To Go only once the key is in AD - expect Value 1
+Get-GPRegistryValue -Name $GpoName -Key $Key -ValueName RDVRequireActiveDirectoryBackup | Format-Table ValueName, Value
 ```
 
 | Registry value (`OS…` / `FDV…` / `RDV…`) | GPMC option |
@@ -106,7 +109,7 @@ Get-GPRegistryValue -Name $GpoName -Key $Key | Sort-Object ValueName | Format-Ta
 | `…RequireActiveDirectoryBackup` | Do not enable BitLocker until recovery information is stored to AD DS for … drives |
 
 > [!WARNING]
-> **Removable drives (`RDV`).** With `RDVRequireActiveDirectoryBackup = 1`, BitLocker To Go can only be turned on while a DC is reachable. Add `'RDV'` to the prefix list only if that is what you want.
+> **Removable drives (`RDV`).** Because `'RDV'` is in the prefix list, the loop also sets `RDVRequireActiveDirectoryBackup = 1` (*Do not enable BitLocker until recovery information is stored to AD DS for removable data drives*). BitLocker To Go can then only be turned on while a DC is reachable.
 
 ---
 
@@ -147,7 +150,7 @@ On the DC or the PAW:
 
 ```powershell
 # All keys stored for one computer, newest last
-$pc = Get-ADComputer WS01
+$pc = Get-ADComputer 'WIN11-PAW-WDAC'
 Get-ADObject -SearchBase $pc.DistinguishedName -Filter "objectClass -eq 'msFVE-RecoveryInformation'" `
     -Properties msFVE-RecoveryPassword, whenCreated |
     Sort-Object whenCreated | Select-Object whenCreated, msFVE-RecoveryPassword
