@@ -51,6 +51,19 @@ $AdWaitSeconds = 60
 $Results = New-Object System.Collections.Generic.List[object]
 function Add-Result([string]$Status, [string]$Check, [string]$Detail) { $Results.Add([pscustomobject]@{ Status = $Status; Check = $Check; Detail = $Detail }) }
 
+# The results table, one console line at a time: PASS rows green, WARN yellow, FAIL (every STOP) red. Wrapped lines of a
+# row keep its color; the header stays plain.
+function Write-ResultsTable($Rows) {
+    $Colors = @{ PASS = 'Green'; WARN = 'Yellow'; FAIL = 'Red' }
+    $Color = $null
+    foreach ($Line in (($Rows | Format-Table -AutoSize -Wrap | Out-String -Width 220) -split '\r?\n')) {
+        $First = ($Line -split '\s+', 2)[0]
+        if ($Colors.ContainsKey($First)) { $Color = $Colors[$First] }
+        elseif ($Line -notmatch '^\s') { $Color = $null }
+        if ($Color) { Write-Host $Line -ForegroundColor $Color } else { Write-Host $Line }
+    }
+}
+
 # --- Decision logic (no system access) ---
 
 # 'Encrypt', 'Activate', 'ReEncrypt', 'WaitThenEncrypt', 'InProgress' or 'PendingRestart'; throws STOP for anything else
@@ -438,7 +451,7 @@ finally {
     if ($FailCount) { $Summary = 'FAILED'; $Color = 'Red' }
     elseif ($WarnCount) { $Summary = "PASSED with $WarnCount warning(s)"; $Color = 'Yellow' }
     else { $Summary = 'PASSED'; $Color = 'Green' }
-    $Results | Format-Table -AutoSize -Wrap | Out-String -Width 220 | Write-Host
+    Write-ResultsTable $Results
     Write-Host $Summary -ForegroundColor $Color
     if ($Restart -and -not $FailCount) { Write-Host "NEXT: $Restart" -ForegroundColor Yellow }
     $Results | Export-Csv -LiteralPath "$Log.csv" -NoTypeInformation -Encoding UTF8 -WhatIf:$false

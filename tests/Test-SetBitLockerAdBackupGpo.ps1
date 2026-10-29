@@ -303,7 +303,36 @@ Invoke-Case 'Values do not stick -> FAIL' -Params $NC -Setup { $Global:M.SetIsNo
 Invoke-Case 'Link does not stick -> FAIL' -Params $NC -Setup { $Global:M.LinkIsNoop = $true } -ExpectExit 1 -ExpectCalls $Fresh -ExpectText 'FAIL Verify link'
 Invoke-Case 'Registry.pol missing -> FAIL' -Params $NC -Setup { Set-Compliant; $Global:M.PolHash = '' } -ExpectExit 1 -ExpectText 'FAIL Registry.pol'
 
-# --- 8. Guard: a real (module) command must never run under the harness ---
+# --- 9. Console colors of the results table: PASS green, WARN yellow, FAIL (every STOP) red, header plain ---
+# Write-Host lines arrive on the information stream with their ForegroundColor (the host default when none is given).
+function Get-ConsoleLines([hashtable]$Params, [scriptblock]$Setup) {
+    Reset-Mock; & $Setup
+    $P = @{ SettingsPath = 'C:\cfg\BitLockerAdBackupGpo.json'; LogDir = (Join-Path $Work 'colors') }
+    foreach ($K in $Params.Keys) { $P[$K] = $Params[$K] }
+    foreach ($R in @(& $ScriptPath @P 6>&1)) {
+        if ($R -is [System.Management.Automation.InformationRecord] -and $R.MessageData -is [System.Management.Automation.HostInformationMessage]) {
+            [pscustomobject]@{ Text = [string]$R.MessageData.Message; Color = [string]$R.MessageData.ForegroundColor }
+        }
+    }
+}
+function Test-RowColors([string]$Name, $Lines, [string[]]$MustHave) {
+    $Expect = @{ PASS = 'Green'; WARN = 'Yellow'; FAIL = 'Red' }
+    $Bad = New-Object System.Collections.Generic.List[string]
+    $Row = $null
+    foreach ($L in $Lines) {
+        $First = ($L.Text -split '\s+', 2)[0]
+        if ($Expect.ContainsKey($First)) { $Row = $First; if ($L.Color -ne $Expect[$First]) { $Bad.Add("$First row is '$($L.Color)'") } }
+        elseif ($Row -and $L.Text -match '^\s+\S') { if ($L.Color -ne $Expect[$Row]) { $Bad.Add("wrapped $Row line is '$($L.Color)'") } }
+        else { $Row = $null; if ($L.Text -match '^Status\s+Check' -and $Expect.Values -contains $L.Color) { $Bad.Add("header is '$($L.Color)'") } }
+    }
+    foreach ($S in $MustHave) { if (-not @($Lines | Where-Object { $_.Text -match "^$S " }).Count) { $Bad.Add("no $S row") } }
+    Assert-That ($Bad.Count -eq 0) $Name (($Bad | Select-Object -Unique) -join '; ')
+}
+Test-RowColors 'Colors: PASS rows green, WARN rows yellow' (Get-ConsoleLines $NC { Set-Compliant; $Global:M.Admx.CentralStore = 'MissingFile' }) 'PASS', 'WARN'
+$StopLines = @(Get-ConsoleLines $NC { $Global:M.Ous = @() })
+Test-RowColors 'Colors: STOP (FAIL) row red, wrapped lines too' $StopLines 'PASS', 'FAIL'
+
+# --- 10. Guard: a real (module) command must never run under the harness (last: it leaves the mocks unusable) ---
 function Invoke-GuardCase {
     New-Module -Name FakeRealSetEscrowValue -ScriptBlock { function Set-EscrowValue { param($Id, $Name, $Value) $Global:M.Calls.Add('REAL') }; Export-ModuleMember -Function Set-EscrowValue } | Import-Module -Scope Local
     try { Invoke-Case 'Guard: module command instead of a mock -> STOP' -Params $NC -ExpectExit 1 -ExpectText 'is not a mock function' }
