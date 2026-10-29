@@ -63,38 +63,57 @@
 
 `Set-GPRegistryValue` writes the same `Registry.pol` entries the GPMC editor would. Because the value names match the ADMX, GPMC on a GUI computer shows them as the normal administrative template settings.
 
+Run the block as one piece (paste all of it, or save it as a `.ps1`). It checks for Active Directory first and stops at the first `STOP` or error; the checks run before anything is created. The domain is read from the computer it runs on, so the same block works in any AD domain.
+
 ```powershell
-Import-Module GroupPolicy
+& {
+    $ErrorActionPreference = 'Stop'
+    Import-Module GroupPolicy, ActiveDirectory
 
-$GpoName = 'JMSC_BitLocker_AD_Backup'
-$Target  = 'OU=JMSC-WDAC-WRKSTNS,DC=skynet-home,DC=local'     # your client OU, or the domain root
-$Key     = 'HKLM\SOFTWARE\Policies\Microsoft\FVE'
-
-$gpo = New-GPO -Name $GpoName -Comment 'BitLocker: escrow recovery passwords and key packages to AD DS'
-
-$values = [ordered]@{
-    Recovery                     = 1   # policy Enabled
-    ManageDRA                    = 1   # Allow data recovery agent (GPMC default)
-    RecoveryPassword             = 2   # 48-digit recovery password: 2 = Allow, 1 = Require, 0 = Do not allow
-    RecoveryKey                  = 2   # 256-bit recovery key: same values
-    HideRecoveryPage             = 0   # keep the recovery options in the setup wizard
-    ActiveDirectoryBackup        = 1   # Save BitLocker recovery information to AD DS
-    ActiveDirectoryInfoToStore   = 1   # 1 = recovery passwords and key packages, 2 = recovery passwords only
-    RequireActiveDirectoryBackup = 1   # Do not enable BitLocker until recovery information is stored to AD DS
-}
-foreach ($prefix in 'OS', 'FDV', 'RDV') {     # added 'RDV' for removable drives, see below
-    foreach ($v in $values.GetEnumerator()) {
-        Set-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName "$prefix$($v.Key)" -Type DWord -Value $v.Value | Out-Null
+    # Active Directory only: this computer must be domain-joined, and a domain controller must answer
+    if (-not (Get-CimInstance -ClassName Win32_ComputerSystem).PartOfDomain) {
+        throw 'STOP: this computer is not joined to an Active Directory domain. Run this on a DC or a domain-joined management computer. Nothing was created.'
     }
+    try   { $Domain = Get-ADDomain }
+    catch { throw "STOP: no domain controller answered for this computer's domain ($($_.Exception.Message)). Check DNS and DC connectivity. Nothing was created." }
+
+    $GpoName  = 'JMSC_BitLocker_AD_Backup'
+    $OuName   = 'JMSC-WDAC-WRKSTNS'                 # the client OU, by name
+    $Key      = 'HKLM\SOFTWARE\Policies\Microsoft\FVE'
+    $DomainDN = $Domain.DistinguishedName           # DC=...,DC=... of the domain this computer is in
+
+    # Find the OU by name anywhere in that domain
+    $Ou = @(Get-ADOrganizationalUnit -Filter "Name -eq '$OuName'" -SearchBase $DomainDN)
+    if ($Ou.Count -ne 1) { throw "STOP: expected 1 OU named '$OuName' in $DomainDN, found $($Ou.Count). Create it, or change `$OuName. Nothing was created." }
+    $Target = $Ou[0].DistinguishedName              # or $DomainDN to link at the domain root
+    Write-Host "Domain $($Domain.DNSRoot) ($DomainDN): GPO '$GpoName' will be linked to $Target"
+
+    $gpo = New-GPO -Name $GpoName -Comment 'BitLocker: escrow recovery passwords and key packages to AD DS'
+
+    $values = [ordered]@{
+        Recovery                     = 1   # policy Enabled
+        ManageDRA                    = 1   # Allow data recovery agent (GPMC default)
+        RecoveryPassword             = 2   # 48-digit recovery password: 2 = Allow, 1 = Require, 0 = Do not allow
+        RecoveryKey                  = 2   # 256-bit recovery key: same values
+        HideRecoveryPage             = 0   # keep the recovery options in the setup wizard
+        ActiveDirectoryBackup        = 1   # Save BitLocker recovery information to AD DS
+        ActiveDirectoryInfoToStore   = 1   # 1 = recovery passwords and key packages, 2 = recovery passwords only
+        RequireActiveDirectoryBackup = 1   # Do not enable BitLocker until recovery information is stored to AD DS
+    }
+    foreach ($prefix in 'OS', 'FDV', 'RDV') {     # added 'RDV' for removable drives, see below
+        foreach ($v in $values.GetEnumerator()) {
+            Set-GPRegistryValue -Guid $gpo.Id -Key $Key -ValueName "$prefix$($v.Key)" -Type DWord -Value $v.Value | Out-Null
+        }
+    }
+
+    New-GPLink -Guid $gpo.Id -Target $Target -LinkEnabled Yes
+
+    # Check what the GPO holds (24 values: 8 each for OS, FDV and RDV)
+    Get-GPRegistryValue -Name $GpoName -Key $Key | Sort-Object ValueName | Format-Table ValueName, Value
+
+    # Removable drives: BitLocker To Go only once the key is in AD - expect Value 1
+    Get-GPRegistryValue -Name $GpoName -Key $Key -ValueName RDVRequireActiveDirectoryBackup | Format-Table ValueName, Value
 }
-
-New-GPLink -Guid $gpo.Id -Target $Target -LinkEnabled Yes
-
-# Check what the GPO holds (24 values: 8 each for OS, FDV and RDV)
-Get-GPRegistryValue -Name $GpoName -Key $Key | Sort-Object ValueName | Format-Table ValueName, Value
-
-# Removable drives: BitLocker To Go only once the key is in AD - expect Value 1
-Get-GPRegistryValue -Name $GpoName -Key $Key -ValueName RDVRequireActiveDirectoryBackup | Format-Table ValueName, Value
 ```
 
 | Registry value (`OS…` / `FDV…` / `RDV…`) | GPMC option |
