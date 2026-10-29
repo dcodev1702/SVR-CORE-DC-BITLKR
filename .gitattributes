@@ -1,0 +1,2 @@
+# Store every file byte-for-byte (CRLF scripts, UTF-16 XML, binaries): the GitHub ZIP then matches what was tested.
+* -text
