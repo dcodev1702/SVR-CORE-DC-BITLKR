@@ -75,6 +75,8 @@ That leaves 36 values, all under `HKLM\SOFTWARE\Policies\Microsoft\FVE`. The scr
 .\scripts\Set-BitLockerAdBackupGpo.ps1 -SettingsPath .\scripts\BitLockerAdBackupGpo.Servers.json
 ```
 
+A `Backup-GPO` copy of the GPO as created in the lab, with a readable HTML report of its settings, is in [`gpo/JMSC_BitLocker_AD_Backup_Servers/`](gpo/JMSC_BitLocker_AD_Backup_Servers/) ([how to use it](gpo/README.md)).
+
 The tests (`.\tests\Test-SetBitLockerAdBackupGpo.ps1`) check that the servers file differs from the workstation file only by name, OU and the deny-write values, and run it end to end against mocks: 36 values, nothing under the SYSTEM key, linked to `JMSC-Servers`, and a second run changes nothing.
 
 ![Group Policy Management, JMSC_BitLocker_AD_Backup_Servers selected under the JMSC-Servers OU, Scope tab: linked to JMSC-Servers (path skynet-home.local/JMSC-Servers), Enforced No, Link Enabled Yes; Security Filtering: Authenticated Users; WMI filter: none](images/PDQ/BITLOCKER-SERVER-ENABLED-1.png)

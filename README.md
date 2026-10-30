@@ -72,7 +72,7 @@
 .\scripts\Set-BitLockerAdBackupGpo.ps1 -NoConfirm   # automation
 ```
 
-**Two GPOs: workstations and servers.** The same script creates a separate GPO for servers from [`scripts/BitLockerAdBackupGpo.Servers.json`](scripts/BitLockerAdBackupGpo.Servers.json): `JMSC_BitLocker_AD_Backup_Servers`, linked to `OU=JMSC-Servers`. It holds the same recovery, AD backup, encryption method and recovery message values, but **not** the deny-write values (`FDVDenyWriteAccess`, `RDVDenyWriteAccess`, `RDVDenyCrossOrg`), so a data disk added to a server later stays writable before it is encrypted. That makes 36 values, all under the SOFTWARE key.
+**Two GPOs: workstations and servers.** The same script creates a separate GPO for servers from [`scripts/BitLockerAdBackupGpo.Servers.json`](scripts/BitLockerAdBackupGpo.Servers.json): `JMSC_BitLocker_AD_Backup_Servers`, linked to `OU=JMSC-Servers`. It holds the same recovery, AD backup, encryption method and recovery message values, but **not** the deny-write values (`FDVDenyWriteAccess`, `RDVDenyWriteAccess`, `RDVDenyCrossOrg`), so a data disk added to a server later stays writable before it is encrypted. That makes 36 values, all under the SOFTWARE key. A `Backup-GPO` copy of the servers GPO from the lab is in [`gpo/`](gpo/README.md).
 
 ```powershell
 .\scripts\Set-BitLockerAdBackupGpo.ps1 -SettingsPath .\scripts\BitLockerAdBackupGpo.Servers.json -WhatIf
