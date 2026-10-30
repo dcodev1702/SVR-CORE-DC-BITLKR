@@ -50,12 +50,12 @@ A read-only check from the PAW (step S1) found a fresh Hyper-V VM with only C: (
 | PDQ-SRVR | PowerShell 7.6.9 | MSI copied from the PAW (step S2) | the `PowerShell.7` remoting endpoint, used for every later step |
 | PDQ-SRVR | `BitLocker` feature and module | `Install-WindowsFeature BitLocker -IncludeAllSubFeature -IncludeManagementTools` (step S3). 11 features: BitLocker, Enhanced Storage, the BitLocker admin tools, the Recovery Password Viewer and the AD DS snap-ins it needs | `Enable-BitLockerOsDrive.ps1` |
 | PDQ-SRVR | `TrustedPlatformModule`, `SecureBoot` modules | in-box on Windows Server 2025 | the script's TPM and Secure Boot checks |
-| PDQ-SRVR | vTPM | Hyper-V on RYZEN-BEE (step S6) | the TPM protector |
-| RYZEN-BEE | `Hyper-V` module | in-box with Hyper-V | `Set-VMKeyProtector`, `Enable-VMTPM` |
+| PDQ-SRVR | vTPM | Hyper-V on RYZEN-BEE (step S6); now [`scripts/Enable-VmTpm.ps1`](../scripts/Enable-VmTpm.ps1) | the TPM protector |
+| RYZEN-BEE | `Hyper-V` module | in-box with Hyper-V | `Set-VMKeyProtector`, `Enable-VMTPM`, or `Enable-VmTpm.ps1`, which runs them |
 | DC25-1 | `ActiveDirectory`, `GroupPolicy` modules; PowerShell 7.6.9 | in-box with the AD DS role; MSI, installed earlier | `Set-BitLockerAdBackupGpo.ps1`. Under PowerShell 7 it loads `GroupPolicy` natively and `ActiveDirectory` through Windows PowerShell compatibility. |
 | PAW | RSAT AD DS, Group Policy and BitLocker Recovery Password Viewer tools | `DISM.exe /Online /Add-Capability` ([README section 6](../README.md#6-find-a-recovery-password-without-a-gui)) | `Get-ADObject`, GPMC, ADUC |
 
-Windows Server does not have BitLocker until the feature is installed, and a VM has no TPM until the host adds one. Without either, `Enable-BitLockerOsDrive.ps1` stops at its module or TPM check. One shutdown covers both: install the feature without restarting, shut down, add the vTPM on the host, start.
+Windows Server does not have BitLocker until the feature is installed, and a VM has no TPM until the host adds one. Without either, `Enable-BitLockerOsDrive.ps1` stops at its module or TPM check. Without a TPM it also names the platform and shows how to add one; for PDQ-SRVR that is `.\scripts\Enable-VmTpm.ps1 -VMName 'PDQ - Server 2025'` on RYZEN-BEE ([README section 2](../README.md#2-prerequisites)). One shutdown covers both: install the feature without restarting, then let `Enable-VmTpm.ps1` shut the VM down, add the vTPM and start it again.
 
 ---
 
@@ -98,7 +98,7 @@ The tests (`.\tests\Test-SetBitLockerAdBackupGpo.ps1`) check that the servers fi
 | S3 | PDQ-SRVR | `PowerShell.7` endpoint | `Install-WindowsFeature BitLocker -IncludeAllSubFeature -IncludeManagementTools`, `-WhatIf` first, no restart | `SuccessRestartRequired`, 11 features |
 | S4 | PDQ-SRVR | `PowerShell.7` endpoint | `shutdown /s /t 10 /d p:2:4` | off |
 | S5 | DC25-1 | scripts copied from the PAW, `PowerShell.7` endpoint | `Set-BitLockerAdBackupGpo.ps1 -SettingsPath <folder>\BitLockerAdBackupGpo.Servers.json -WhatIf`, then `-NoConfirm` (23:37:47) | `JMSC_BitLocker_AD_Backup_Servers` (`{42A012F0-F1B0-41BD-8BCD-AFC976B0B0B5}`), 36 values, all under the SOFTWARE key, linked to `OU=JMSC-Servers`; `Registry.pol` SHA-256 `20A6DB7A…`; version 36 in AD and SYSVOL |
-| S6 | RYZEN-BEE | elevated, on the host | `Set-VMKeyProtector -VMName 'PDQ - Server 2025' -NewLocalKeyProtector`; `Enable-VMTPM -VMName 'PDQ - Server 2025'`; `Start-VM` | TPM 2.0 present and ready; the boot (23:41) finished the feature install |
+| S6 | RYZEN-BEE | elevated, on the host, by hand | `Set-VMKeyProtector -VMName 'PDQ - Server 2025' -NewLocalKeyProtector`; `Enable-VMTPM -VMName 'PDQ - Server 2025'`; `Start-VM`. The same step, with its checks, is now `.\scripts\Enable-VmTpm.ps1 -VMName 'PDQ - Server 2025'` | TPM 2.0 present and ready; the boot (23:41) finished the feature install |
 | S7 | PDQ-SRVR | `PowerShell.7` endpoint | `gpupdate /target:computer /force`; `gpresult /scope computer /r` | `JMSC_BitLocker_AD_Backup_Servers` applied; 36 values in `HKLM\SOFTWARE\Policies\Microsoft\FVE`; no deny-write values |
 | S8 | PDQ-SRVR | **as SYSTEM**: a one-time scheduled task running `pwsh.exe`, registered and removed over the `PowerShell.7` endpoint | `Enable-BitLockerOsDrive.ps1 -WhatIf` | every check PASS; plan: add a recovery password, encrypt with XTS-AES 256 and the TPM |
 | S9 | PDQ-SRVR | as SYSTEM, the same way | `Enable-BitLockerOsDrive.ps1 -NoConfirm` (23:44:33) | recovery password `{3D7D76AD-…}` added, BitLocker on; event 784 at 23:44:36; AD object `2026-10-29T23:44:34-08:00{3D7D76AD-…}`. The script itself reported WARN "not in AD yet" ([section 7](#7-what-the-server-run-showed)). |

@@ -55,8 +55,25 @@
 | **Where to run** | A domain controller (every DC has the `ActiveDirectory` and `GroupPolicy` modules; Server Core is fine) or a domain-joined PAW / management computer with RSAT **Group Policy Management** and **Active Directory** tools. Windows PowerShell 5.1, elevated. |
 | **Account** | Domain Admin for these steps (create and link a GPO, read the confidential attribute). |
 | **Forest** | Schema of Windows Server 2008 or later: `msFVE-RecoveryInformation` has been in the base schema since then, so a Server 2025 forest has it. Check: `Get-ADObject "CN=ms-FVE-RecoveryInformation,$((Get-ADRootDSE).schemaNamingContext)"` |
-| **Clients** | Domain-joined Windows 10/11 or Windows Server with a TPM (or vTPM). Windows Server needs the feature first: `Install-WindowsFeature BitLocker -IncludeAllSubFeature -IncludeManagementTools -Restart`. A DC must be reachable when the recovery password is created. |
+| **Clients** | Domain-joined Windows 10/11 or Windows Server with a TPM, or a vTPM in a VM (below). Windows Server needs the feature first: `Install-WindowsFeature BitLocker -IncludeAllSubFeature -IncludeManagementTools -Restart`. A DC must be reachable when the recovery password is created. |
 | **OU** | The client computers must sit in an **OU**: a GPO cannot be linked to the default `CN=Computers` container. Move them to an OU, or link the GPO at the domain root. |
+
+**A TPM for virtual machines.** The TPM protector needs a TPM in the computer itself, and a VM gets a virtual one from its host. On a **Hyper-V host**, [`scripts/Enable-VmTpm.ps1`](scripts/Enable-VmTpm.ps1) adds it. It takes the VM's name, checks that the VM is Generation 2, shows the plan in yellow and asks Y/N. Then it shuts the VM down if it is running (a normal shutdown through the guest, never a power-off; a Saved or Paused VM is refused), adds a local key protector only if the VM has none (an existing one is kept, so nothing sealed to it is lost), enables the vTPM, starts the VM again and verifies the result. A second run changes nothing.
+
+```powershell
+# On the Hyper-V host, elevated; Confirm-Change.ps1 and VmTpmGuidance.ps1 next to the script
+.\scripts\Enable-VmTpm.ps1 -VMName 'PDQ - Server 2025' -WhatIf     # plan only
+.\scripts\Enable-VmTpm.ps1 -VMName 'PDQ - Server 2025'             # shows the plan, asks Continue? [Y/N]
+.\scripts\Enable-VmTpm.ps1 -VMName 'PDQ - Server 2025' -LeaveOff   # do not start the VM again
+```
+
+- **The VM's name in Hyper-V**, which can differ from the computer name: in the lab, DC25-1 runs as the VM `DC-1`.
+- **Not a Hyper-V host?** Run anywhere else, the script says what that computer is (Hyper-V VM, VMware VM, KVM / Proxmox VM, or physical) and shows how a vTPM is added on each platform, then stops with nothing changed:
+  - **VMware vSphere:** VM powered off, EFI firmware, hardware version 14 or later, a key provider in vCenter; then *Edit Settings > Add New Device > Trusted Platform Module*, or in PowerCLI `Get-VM -Name <vm> | New-VTpm`.
+  - **Proxmox VE:** VM shut down, OVMF (UEFI) firmware with an EFI disk; then *Hardware > Add > TPM State* (v2.0), or on the Proxmox host `qm set <vmid> -tpmstate0 <storage>:1,version=v2.0`.
+- **Pre-flight:** `Enable-BitLockerOsDrive.ps1` checks for the TPM before it changes anything. Without one it names the platform and shows the same steps; in a Hyper-V VM that is the exact `Enable-VmTpm.ps1` command with its VM name and host, read from the guest's Hyper-V integration data.
+
+Tests (mocks, no VM is touched): `.\tests\Test-EnableVmTpm.ps1`, in Windows PowerShell 5.1 and PowerShell 7.
 
 ---
 
@@ -350,7 +367,7 @@ Reopen ADUC; it then shows a **BitLocker Recovery** tab on computer objects and 
 Only needed if you also want to encrypt the DC's own drives.
 
 1. **Feature** (Server Core 2025): `Install-WindowsFeature BitLocker -IncludeAllSubFeature -IncludeManagementTools -Restart`
-2. **TPM.** A Hyper-V Generation 2 VM needs a vTPM. On the host, with the VM shut down: `Set-VMKeyProtector -VMName <vm> -NewLocalKeyProtector; Enable-VMTPM -VMName <vm>`
+2. **TPM.** A Hyper-V Generation 2 VM needs a vTPM. On the host: `.\scripts\Enable-VmTpm.ps1 -VMName <vm>` ([section 2](#2-prerequisites)). By hand, with the VM shut down: `Set-VMKeyProtector -VMName <vm> -NewLocalKeyProtector; Enable-VMTPM -VMName <vm>`
 3. **Escrow.** If the GPO also applies to the DC (link to the *Domain Controllers* OU or the domain root), the DC writes its own key into AD.
 
 > [!CAUTION]
@@ -365,6 +382,7 @@ Only needed if you also want to encrypt the DC's own drives.
 | No `msFVE-RecoveryInformation` object appears | On the client: `gpresult /scope computer /r` lists the GPO; `Get-ItemProperty HKLM:\SOFTWARE\Policies\Microsoft\FVE` shows the values; the volume has a `RecoveryPassword` protector; for drives encrypted earlier, the backfill ([section 4](#4-back-up-keys-of-drives-that-are-already-encrypted)) ran. |
 | `Add-BitLockerKeyProtector` / `Enable-BitLocker` fails with an AD backup error | No DC reachable — `RequireActiveDirectoryBackup` is doing its job. Fix name resolution / connectivity and retry. |
 | `New-GPLink` fails on `CN=Computers` | Containers cannot take GPO links. Use an OU, or the domain root. |
+| `Enable-BitLockerOsDrive.ps1`: *STOP: no TPM was found* | The computer has no TPM. The message names the platform and the fix; above the results table are the steps. On a Hyper-V VM: `.\scripts\Enable-VmTpm.ps1 -VMName <vm>` on its host ([section 2](#2-prerequisites)). |
 | `Enable-BitLocker` fails with `0x80310030` (*bootable media (CD or DVD)*) | A disc or ISO is in an optical drive. Remove it (Hyper-V host: `Get-VMDvdDrive -VMName <vm> \| Set-VMDvdDrive -Path $null`), restart, run again. |
 | Recovery password added, but no AD object | Normal on a decrypted drive: BitLocker writes it to AD when it is turned on (event 784). `Backup-BitLockerKeyProtector` cannot help there (`FVE_E_NOT_ACTIVATED`). |
 | `Get-ADObject` returns the object but no password | The account cannot read the confidential attribute ([section 7](#7-who-can-read-the-keys)). |
@@ -425,6 +443,7 @@ Its own write-up, with screenshots: **[servers/README.md](servers/README.md)**. 
 - [ ] Run sections 3–6 in the lab against a Server Core 2025 DC and record the results here (section 3: done 2026-10-28, servers GPO 2026-10-30; section 5: done 2026-10-29 on a workstation, 2026-10-30 on a server).
 - [ ] `Enable-BitLockerOsDrive.ps1`: when run as SYSTEM, accept event 784 for the new protector as proof of the AD backup, since the computer account cannot read its recovery objects.
 - [x] Script the GPO creation (settings file, `-WhatIf`): [`scripts/Set-BitLockerAdBackupGpo.ps1`](scripts/Set-BitLockerAdBackupGpo.ps1).
+- [x] Script the vTPM for Hyper-V VMs, with steps for VMware vSphere and Proxmox VE: [`scripts/Enable-VmTpm.ps1`](scripts/Enable-VmTpm.ps1).
 - [ ] Script the backfill for a list of computers.
 - [ ] Script key lookup by computer name or recovery key ID.
 - [ ] Help-desk delegation from PowerShell (no Delegation of Control Wizard on Server Core).

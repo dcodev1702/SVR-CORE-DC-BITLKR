@@ -20,7 +20,7 @@ function Assert-That([bool]$Ok, [string]$Name, [string]$Why = '') {
 }
 
 # --- 0. Parse and ASCII checks, in this edition ---
-foreach ($File in @($ScriptPath, (Join-Path $ScriptDir 'Confirm-Change.ps1'), $PSCommandPath)) {
+foreach ($File in @($ScriptPath, (Join-Path $ScriptDir 'Confirm-Change.ps1'), (Join-Path $ScriptDir 'VmTpmGuidance.ps1'), $PSCommandPath)) {
     $Tokens = $null; $Errors = $null
     [void][Management.Automation.Language.Parser]::ParseFile($File, [ref]$Tokens, [ref]$Errors)
     $NonAscii = @([IO.File]::ReadAllBytes($File) | Where-Object { $_ -gt 127 }).Count
@@ -78,6 +78,7 @@ function Get-TpmState { [pscustomobject]@{ Present = $Global:M.TpmPresent; Ready
 function Get-SecureBootState { $Global:M.SecureBoot }
 function Get-WinReState { $Global:M.WinRe }
 function Get-OpticalMedia { $Global:M.Optical }
+function Get-PlatformFacts { [pscustomobject]$Global:M.Facts }
 function Wait-Decryption { param([string]$Drive, [int]$Minutes)
     $Global:M.Calls.Add('Wait')
     if ($Global:M.DecryptTimesOut) { return $false }
@@ -118,6 +119,8 @@ function Reset-Mock {
         Vol = New-Vol 'FullyEncrypted' 'XtsAes128' 'Off' @()      # this PAW: device encryption, Waiting for Activation, XTS-AES 128
         DecryptTimesOut = $false; ResumeNoop = $false; Optical = @(); EnableFails = $false
         Calls = New-Object System.Collections.Generic.List[string]; EnableArgs = ''; NewRp = ''
+        # As PDQ-SRVR reported it before its vTPM: a Hyper-V VM that knows its own VM name and host
+        Facts = @{ Manufacturer = 'Microsoft Corporation'; Model = 'Virtual Machine'; BiosManufacturer = 'Microsoft Corporation'; BiosVersion = 'Hyper-V UEFI Release v4.1'; GuestVmName = 'PDQ - Server 2025'; GuestHostName = 'RYZEN-BEE' }
     }
 }
 function Set-Answers([string[]]$List) { $Global:M.Interactive = $true; foreach ($A in $List) { $Global:M.Answers.Enqueue($A) } }
@@ -217,7 +220,12 @@ Invoke-Case 'TPM-only startup not allowed -> STOP' -Params $NC -Setup { $Global:
 Invoke-Case 'Full encryption required, -UsedSpaceOnly -> STOP' -Params @{ NoConfirm = $true; UsedSpaceOnly = $true } -Setup { $Global:M.Pol.OSEncryptionType = 1 } -ExpectExit 1 -ExpectText 'OSEncryptionType = 1'
 Invoke-Case 'Used-space-only required, no -UsedSpaceOnly -> STOP' -Params $NC -Setup { $Global:M.Pol.OSEncryptionType = 2 } -ExpectExit 1 -ExpectText 'OSEncryptionType = 2'
 Invoke-Case 'GPO method XTS-AES 128 vs -EncryptionMethod XtsAes256 -> STOP' -Params $NC -Setup { $Global:M.Pol.EncryptionMethodWithXtsOs = 6 } -ExpectExit 1 -ExpectText 'EncryptionMethodWithXtsOs = 6 (XtsAes128)'
-Invoke-Case 'No TPM -> STOP' -Params $NC -Setup { $Global:M.TpmPresent = $false } -ExpectExit 1 -ExpectText 'no TPM'
+Invoke-Case 'No TPM, Hyper-V VM -> STOP with the exact Enable-VmTpm.ps1 command for its host' -Params $NC -Setup { $Global:M.TpmPresent = $false } -ExpectExit 1 -ExpectText 'no TPM was found on this Microsoft Hyper-V virtual machine', "VM 'PDQ - Server 2025' on the Hyper-V host RYZEN-BEE", "on the Hyper-V host RYZEN-BEE, run .\scripts\Enable-VmTpm.ps1 -VMName 'PDQ - Server 2025'", 'Generation 1 VM cannot have a vTPM', 'Nothing was changed'
+Invoke-Case 'No TPM, Hyper-V VM without guest data -> placeholder VM name' -Params $NC -Setup { $Global:M.TpmPresent = $false; $Global:M.Facts.GuestVmName = ''; $Global:M.Facts.GuestHostName = '' } -ExpectExit 1 -ExpectText "On the Hyper-V host, in an elevated PowerShell", "-VMName '<VM name>'"
+Invoke-Case "No TPM, VM name with an apostrophe -> quoted for pasting" -Params $NC -Setup { $Global:M.TpmPresent = $false; $Global:M.Facts.GuestVmName = "Bob's VM" } -ExpectExit 1 -ExpectText "-VMName 'Bob''s VM'"
+Invoke-Case 'No TPM, VMware VM -> vSphere steps' -Params $NC -Setup { $Global:M.TpmPresent = $false; $Global:M.Facts = @{ Manufacturer = 'VMware, Inc.'; Model = 'VMware7,1'; BiosManufacturer = 'VMware, Inc.'; BiosVersion = 'VMW71.00V'; GuestVmName = ''; GuestHostName = '' } } -ExpectExit 1 -ExpectText 'on this VMware virtual machine', 'Add New Device > Trusted Platform Module', 'New-VTpm', 'hardware version 14', 'key provider'
+Invoke-Case 'No TPM, Proxmox VM -> TPM State steps' -Params $NC -Setup { $Global:M.TpmPresent = $false; $Global:M.Facts = @{ Manufacturer = 'QEMU'; Model = 'Standard PC (Q35 + ICH9, 2009)'; BiosManufacturer = 'EFI Development Kit II / OVMF'; BiosVersion = '4.2023.08-4'; GuestVmName = ''; GuestHostName = '' } } -ExpectExit 1 -ExpectText 'KVM / QEMU virtual machine (for example Proxmox VE)', 'Hardware > Add > TPM State', 'qm set <vmid> -tpmstate0 <storage>:1,version=v2.0'
+Invoke-Case 'No TPM, physical computer -> firmware steps' -Params $NC -Setup { $Global:M.TpmPresent = $false; $Global:M.Facts = @{ Manufacturer = 'Dell Inc.'; Model = 'OptiPlex 7010'; BiosManufacturer = 'Dell Inc.'; BiosVersion = '1.2.3'; GuestVmName = ''; GuestHostName = '' } } -ExpectExit 1 -ExpectText 'on this physical computer', 'UEFI firmware setup', 'Intel PTT or AMD fTPM'
 Invoke-Case 'TPM not ready -> STOP' -Params $NC -Setup { $Global:M.TpmReady = $false } -ExpectExit 1 -ExpectText 'not ready'
 Invoke-Case '-MountPoint not a drive letter -> rejected before the script runs' -Params @{ NoConfirm = $true; MountPoint = 'C:\Windows' } -ExpectExit 99 -ExpectText 'MountPoint'
 

@@ -3,6 +3,8 @@
 #
 # In order - each step runs only after the one before it succeeded:
 #   1. Checks: elevation, OS drive, domain-joined and a DC answers, the AD backup policy (GPO) is applied, TPM ready.
+#      Without a TPM it names the platform (Hyper-V, VMware, KVM / Proxmox, or physical) and shows how to add one; on a
+#      Hyper-V VM that is the exact Enable-VmTpm.ps1 command for its host.
 #   2. Recovery password. When BitLocker is on for the drive (encrypted, incl. 'Waiting for Activation'): add one or back
 #      up an existing one, then confirm in AD that the object for that exact protector exists before any other step.
 #      When the drive is decrypted, BitLocker cannot back up yet (FVE_E_NOT_ACTIVATED): the password is added, and
@@ -22,7 +24,8 @@
 #   .\Enable-BitLockerOsDrive.ps1 -ReEncrypt       # drive uses another method (e.g. XTS-AES 128): decrypt, re-encrypt
 #   .\Enable-BitLockerOsDrive.ps1 -NoConfirm       # automation
 # The recovery password is never printed or logged (the BitLocker cmdlets' warnings, which contain it, are suppressed).
-# Needs Confirm-Change.ps1 in the same folder. Evidence: <LogDir>\Enable-BitLockerOsDrive-<time>.log and .csv.
+# Needs Confirm-Change.ps1 in the same folder, and VmTpmGuidance.ps1 for the no-TPM guidance (without it, a short hint).
+# Evidence: <LogDir>\Enable-BitLockerOsDrive-<time>.log and .csv.
 # Read the recovery password from AD with README section 6.
 [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
 param(
@@ -197,6 +200,19 @@ if (-not $UnderTest) {
 
     function Get-SecureBootState { try { [bool](Confirm-SecureBootUEFI) } catch { $null } }
 
+    # What this computer is (SMBIOS), and on a Hyper-V VM its name and host from the Data Exchange integration service
+    function Get-PlatformFacts {
+        $Cs = Get-CimInstance -ClassName Win32_ComputerSystem
+        $Bios = Get-CimInstance -ClassName Win32_BIOS
+        $Guest = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Virtual Machine\Guest\Parameters' -ErrorAction SilentlyContinue
+        [pscustomobject]@{
+            Manufacturer = [string]$Cs.Manufacturer; Model = [string]$Cs.Model
+            BiosManufacturer = [string]$Bios.Manufacturer; BiosVersion = [string]$Bios.SMBIOSBIOSVersion
+            GuestVmName = $(if ($Guest) { [string]$Guest.VirtualMachineName } else { '' })
+            GuestHostName = $(if ($Guest) { [string]$Guest.PhysicalHostNameFullyQualified } else { '' })
+        }
+    }
+
     function Get-WinReState {
         $Out = (& (Join-Path $env:SystemRoot 'System32\reagentc.exe') /info) -join "`n"
         if ($Out -match 'Windows RE status:\s*Enabled') { 'Enabled' } elseif ($Out -match 'Windows RE status:\s*Disabled') { 'Disabled' } else { 'Unknown' }
@@ -295,7 +311,24 @@ try {
     else { Add-Result 'PASS' 'Policy' "AD backup required; encryption method $EncryptionMethod (EncryptionMethodWithXtsOs = $PolMethod)" }
 
     $Tpm = Get-TpmState
-    if (-not $Tpm.Present) { throw 'STOP: no TPM was found. On a Hyper-V VM, add a virtual TPM (README section 8). Nothing was changed.' }
+    if (-not $Tpm.Present) {
+        # Say what this computer is and how it gets a TPM; on a Hyper-V VM, the exact command for its host
+        $Facts = Get-PlatformFacts
+        $GuidanceFile = Join-Path $PSScriptRoot 'VmTpmGuidance.ps1'
+        $Message = 'STOP: no TPM was found. Add one (README section 8), then run this script again. Nothing was changed.'
+        if (Test-Path -LiteralPath $GuidanceFile -PathType Leaf) {
+            . $GuidanceFile
+            $Platform = Resolve-VmPlatform $Facts.Manufacturer $Facts.Model $Facts.BiosManufacturer $Facts.BiosVersion
+            $What = '{0} is a {1} ({2} / {3})' -f $ComputerName, $VmPlatformText[$Platform], $Facts.Manufacturer, $Facts.Model
+            if ($Platform -eq 'Hyper-V' -and $Facts.GuestVmName) { $What += ": VM '$($Facts.GuestVmName)' on the Hyper-V host $($Facts.GuestHostName)" }
+            Write-Host ''
+            Write-Host "No TPM: $What." -ForegroundColor Yellow
+            foreach ($Line in (Get-VtpmGuidance $Platform $Facts.GuestVmName $Facts.GuestHostName)) { Write-Host $Line -ForegroundColor Yellow }
+            Write-Host ''
+            $Message = 'STOP: no TPM was found on this {0}. To add one, {1}. The steps are shown above (README section 8); then run this script again. Nothing was changed.' -f $VmPlatformText[$Platform], (Get-VtpmFix $Platform $Facts.GuestVmName $Facts.GuestHostName)
+        }
+        throw $Message
+    }
     if (-not $Tpm.Ready) { throw 'STOP: the TPM is not ready (Get-Tpm: TpmReady = False). Initialize it (Initialize-Tpm, or tpm.msc) first. Nothing was changed.' }
     Add-Result 'PASS' 'TPM' 'present and ready'
     $SecureBoot = Get-SecureBootState
