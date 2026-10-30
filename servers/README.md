@@ -132,11 +132,16 @@ Unregister-ScheduledTask -TaskName 'BitLockerOs-Enable' -Confirm:$false
 | `Get-BitLockerVolume C:` | PDQ-SRVR | `FullyEncrypted`, `XtsAes256`, protection `On`, protectors `Tpm` and `RecoveryPassword {3D7D76AD-…}` |
 | BitLocker events | PDQ-SRVR | 775 key protector created, 784 backed up to AD DS (23:44:36), 769 encryption at the next restart, then 24660 and 24667 after it |
 | `Get-ADObject` under `CN=PDQ-SRVR` | PAW | exactly one `msFVE-RecoveryInformation` object, `2026-10-29T23:44:34-08:00{3D7D76AD-…}` |
-| BitLocker Recovery tab | PAW, ADUC | the same entry, below |
+| BitLocker Recovery tab | PAW, ADUC | the same entry (picture 4) |
+| BitLocker Drive Encryption | PDQ-SRVR, Control Panel | C: BitLocker on (picture 5) |
 
 ![Active Directory Users and Computers, OU JMSC-Servers, PDQ-SRVR Properties, BitLocker Recovery tab: one entry dated 2026-10-29 23:44 with Password ID 3D7D76AD-7658-4C77-BB2E-B235B48061B6; Details show the recovery password (redacted), Computer PDQ-SRVR.skynet-home.local, Date 2026-10-29 23:44:34 -0800 and the same Password ID](../images/PDQ/BITLOCKER-SERVER-ENABLED-2-REDACTED.png)
 
 *4. After: one recovery password for PDQ-SRVR, Password ID `3D7D76AD-…`, the protector added in step S9, dated 23:44:34 -0800 like the AD object. The recovery password is redacted in this screenshot.*
+
+![Control Panel, System and Security, BitLocker Drive Encryption: banner "For your security, some settings are managed by your system administrator"; Operating system drive - C: BitLocker on, with Suspend protection, Back up your recovery key and Turn off BitLocker; no fixed data drives listed; Removable data drives - BitLocker To Go](../images/PDQ/BITLOCKER-SERVER-ENABLED-3.png)
+
+*5. The same result on PDQ-SRVR itself, in Control Panel (System and Security > BitLocker Drive Encryption): **C: BitLocker on**. The yellow banner, "some settings are managed by your system administrator", appears because `JMSC_BitLocker_AD_Backup_Servers` sets BitLocker policy on this server. No fixed data drives are listed: C: is the server's only drive.*
 
 ---
 
