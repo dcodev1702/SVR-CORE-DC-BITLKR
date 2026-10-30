@@ -82,6 +82,21 @@ Assert-That ((@($ROther | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -jo
 $KeyErrors = @($ROther | Where-Object { (Get-AdmxKeyOf $_.Name) -ne $_.Key } | ForEach-Object { "$($_.Name): README $($_.Key), ADMX $(Get-AdmxKeyOf $_.Name)" })
 Assert-That ($KeyErrors.Count -eq 0) 'README keys of the other values match the ADMX' ($KeyErrors -join '; ')
 
+# --- 1b. The servers settings file: the workstation settings in a separate GPO and OU, without the deny-write values ---
+$ServersFile = Join-Path $ScriptDir 'BitLockerAdBackupGpo.Servers.json'
+$DenyWrite = @('FDVDenyWriteAccess', 'RDVDenyWriteAccess', 'RDVDenyCrossOrg')
+$ServersText = [IO.File]::ReadAllText($ServersFile)
+Assert-That (@([IO.File]::ReadAllBytes($ServersFile) | Where-Object { $_ -gt 127 }).Count -eq 0) 'ASCII: BitLockerAdBackupGpo.Servers.json'
+$Servers = $ServersText | ConvertFrom-Json
+function Format-Props($O) { @($O.PSObject.Properties | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -join ',' }
+Assert-That ($Servers.GpoName -ceq 'JMSC_BitLocker_AD_Backup_Servers' -and $Servers.OuName -ceq 'JMSC-Servers') 'Servers: own GPO and OU' "GPO '$($Servers.GpoName)', OU '$($Servers.OuName)'"
+Assert-That ($Servers.GpoName -cne $Settings.GpoName -and $Servers.OuName -cne $Settings.OuName) 'Servers: separate from the workstation GPO and OU'
+Assert-That ((@($Servers.Prefixes) -join ',') -ceq (@($Settings.Prefixes) -join ',')) 'Servers = workstations: drive types'
+Assert-That ((Format-Props $Servers.Values) -ceq (Format-Props $Settings.Values)) 'Servers = workstations: 8 recovery values' (Format-Props $Servers.Values)
+Assert-That ((Format-Props $Servers.EncryptionMethods) -ceq (Format-Props $Settings.EncryptionMethods)) 'Servers = workstations: encryption methods' (Format-Props $Servers.EncryptionMethods)
+$ServersOther = @($Settings.OtherValues.PSObject.Properties | Where-Object { $DenyWrite -notcontains $_.Name } | ForEach-Object { '{0}={1}' -f $_.Name, $_.Value }) -join ','
+Assert-That ((Format-Props $Servers.OtherValues) -ceq $ServersOther) 'Servers = workstations minus the deny-write values' (Format-Props $Servers.OtherValues)
+
 # --- 2. Harness: real confirmation gate, mocked system access ---
 $Global:GpoScriptTestHarness = $true
 . (Join-Path $ScriptDir 'Confirm-Change.ps1')
@@ -291,6 +306,28 @@ Invoke-Case 'OU without computers -> WARN, still applies' -Params $NC -Setup { $
 Invoke-Case 'AD and SYSVOL versions differ -> WARN' -Params $NC -Setup { Set-Compliant; $Global:M.SysvolVersion = 24 } -ExpectText 'replication may still be running'
 Invoke-Case 'Central store without this ADMX -> WARN, still applies' -Params $NC -Setup { $Global:M.Admx.CentralStore = 'MissingFile' } -ExpectCalls $Fresh -ExpectText 'WARN Central store', 'Extra Registry Settings'
 Invoke-Case 'Central store has this ADMX -> no central-store warning' -Params $NC -ExpectCalls $Fresh -Extra { if ($Hay -match 'WARN Central store') { 'unexpected central-store warning' } }
+
+# The servers settings file, end to end: its own GPO on OU=JMSC-Servers, nothing under the SYSTEM key, no read-only effect
+$ServersOuDn = 'OU=JMSC-Servers,DC=skynet-home,DC=local'
+$ServersCount = 3 * 8 + 3 + @($Servers.OtherValues.PSObject.Properties).Count
+$ServersParams = @{ NoConfirm = $true; SettingsPath = 'C:\cfg\BitLockerAdBackupGpo.Servers.json' }
+function Set-ServersMock { $Global:M.SettingsText = $ServersText; $Global:M.Ous = @($ServersOuDn); $Global:M.Computers = @('PDQ-SRVR') }
+Invoke-Case "Servers settings, fresh: create JMSC_BitLocker_AD_Backup_Servers, set $ServersCount values, link to JMSC-Servers" -Params $ServersParams -Setup { Set-ServersMock } -ExpectCalls ('NewGpo,Set*{0},NewLink' -f $ServersCount) -ExpectText "all $ServersCount values match", 'Verify link', 'encryption OS XTS-AES 256, FDV XTS-AES 256, RDV XTS-AES 256' -Extra {
+    if ($Global:M.Created -cne "$($Servers.GpoName)|$($Servers.GpoComment)") { return "created '$($Global:M.Created)'" }
+    if ($Global:M.LinkTarget -cne $ServersOuDn) { return "linked to '$($Global:M.LinkTarget)'" }
+    if (-not $Global:M.OuQueries.Contains('JMSC-Servers|DC=skynet-home,DC=local')) { return "OU query was [$($Global:M.OuQueries -join '; ')]" }
+    $Sys = @($Global:M.KeyLog | Where-Object { $_ -like "*|$SysKey|*" }); if ($Sys.Count) { return "written under the SYSTEM key: $($Sys -join ', ')" }
+    foreach ($N in $DenyWrite) { if (@($Global:M.SetLog | Where-Object { $_ -like "$N=*" }).Count) { return "$N was set" } }
+    foreach ($N in 'OSRequireActiveDirectoryBackup=1', 'RDVRequireActiveDirectoryBackup=1', 'EncryptionMethodWithXtsOs=7', 'DisableExternalDMAUnderLock=1') { if (-not $Global:M.SetLog.Contains($N)) { return "$N was not set" } } }
+Invoke-Case 'Servers settings, interactive Y: plan names PDQ-SRVR and promises no read-only drives' -Setup { Set-ServersMock; Set-Answers 'Y' } -Params @{ SettingsPath = 'C:\cfg\BitLockerAdBackupGpo.Servers.json' } -ExpectCalls ('NewGpo,Set*{0},NewLink' -f $ServersCount) -ExpectReadHost 1 -ExpectText 'Applies to: 1 computer(s) in that OU: PDQ-SRVR', "Undo: Remove-GPO -Name 'JMSC_BitLocker_AD_Backup_Servers'" -Extra {
+    if ($Hay -match 'become read-only') { 'the plan says drives become read-only' } }
+Invoke-Case 'Servers settings, second run: nothing to change' -Params $ServersParams -Setup {
+    Set-ServersMock
+    $Global:M.Gpos = @([pscustomobject]@{ Id = $GpoId; DisplayName = $Servers.GpoName; GpoStatus = 'AllSettingsEnabled' })
+    foreach ($P in $Servers.Prefixes) { foreach ($Pr in $Servers.Values.PSObject.Properties) { $Global:M.Values["$P$($Pr.Name)"] = V ([long]$Pr.Value) "$P$($Pr.Name)" } }
+    foreach ($P in $Servers.Prefixes) { $Global:M.Values[$MethodNames[$P]] = V ([long]$Servers.EncryptionMethods.$P) $MethodNames[$P] }
+    foreach ($Pr in $Servers.OtherValues.PSObject.Properties) { $Global:M.Values[$Pr.Name] = V $Pr.Value $Pr.Name }
+    $Global:M.Link = 'Enabled' } -ExpectText 'nothing to change', "all $ServersCount values match"
 
 # --- 7. Transient SYSVOL errors while writing (seen on DC25-1: E_ACCESSDENIED after 10 of 12 writes) ---
 Invoke-Case 'Access denied once while writing -> retried, all values set' -Params $NC -Setup {
