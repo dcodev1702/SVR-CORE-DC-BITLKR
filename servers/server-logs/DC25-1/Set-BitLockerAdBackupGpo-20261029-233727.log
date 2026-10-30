@@ -1,0 +1,43 @@
+**********************
+PowerShell transcript start
+Start time: 20261029233727
+Username: SKYNET\lorenzo
+RunAs User: SKYNET\lorenzo
+Configuration Name: PowerShell.7
+Machine: DC25-1 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\WINDOWS\system32\wsmprovhost.exe -Embedding
+Process ID: 1940
+PSVersion: 7.6.9
+PSEdition: Core
+GitCommitId: 7.6.9
+OS: Microsoft Windows 10.0.26100
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+PS>TerminatingError(Get-ADDomain): "Could not load file or assembly 'System.ServiceModel.NetFramingBase, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'. The system cannot find the file specified."
+What if: Performing the operation "Create GPO" on target "JMSC_BitLocker_AD_Backup_Servers".
+
+Status Check            Detail
+------ -----            ------
+PASS   Settings         C:\Users\lorenzo\AppData\Local\Temp\BitLockerGpo-03aae27e4fec40758b4ddc3a30c6e232\BitLockerAdBackupGpo.Servers.json: GPO 'JMSC_BitLocker_AD_Backup_Servers', OU 'JMSC-Servers', drive types
+                        OS/FDV/RDV, 8 recovery values each; encryption OS XTS-AES 256, FDV XTS-AES 256, RDV XTS-AES 256
+PASS   Modules          PowerShell Core 7.6.9: GroupPolicy native, ActiveDirectory Windows PowerShell compatibility
+PASS   Active Directory domain skynet-home.local (DC=skynet-home,DC=local)
+PASS   Settings vs ADMX 36 values checked against C:\WINDOWS\PolicyDefinitions\VolumeEncryption.admx: 36 under HKLM\SOFTWARE\Policies\Microsoft\FVE, 0 under HKLM\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE
+WARN   Central store    \\skynet-home.local\SYSVOL\skynet-home.local\Policies\PolicyDefinitions has no VolumeEncryption.admx, so GPMC shows these values under Extra Registry Settings (clients still apply them). Copy
+                        %SystemRoot%\PolicyDefinitions\VolumeEncryption.admx and en-US\VolumeEncryption.adml there to see them as the normal BitLocker settings.
+PASS   Target OU        OU=JMSC-Servers,DC=skynet-home,DC=local (1 computer(s): PDQ-SRVR)
+PASS   GPO              'JMSC_BitLocker_AD_Backup_Servers' does not exist yet
+PASS   GPO              -WhatIf: would create 'JMSC_BitLocker_AD_Backup_Servers'
+PASS   Values           -WhatIf: would set 36 value(s)
+PASS   Link             -WhatIf: would link to OU=JMSC-Servers,DC=skynet-home,DC=local
+
+
+PASSED with 1 warning(s)
+Transcript: C:\Logs\Set-BitLockerAdBackupGpo-20261029-233727.log   Results: C:\Logs\Set-BitLockerAdBackupGpo-20261029-233727.csv
+**********************
+PowerShell transcript end
+End time: 20261029233731
+**********************

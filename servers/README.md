@@ -1,7 +1,7 @@
 # BitLocker recovery keys in AD on a member server (PDQ-SRVR)
 
 > [!NOTE]
-> How the lab's member server **PDQ-SRVR** (Windows Server 2025 Datacenter, in its own OU `JMSC-Servers`) got BitLocker on its operating system drive, with the recovery password stored in AD DS before encryption started. It uses the same two scripts as the workstation in the [README](README.md), with a **separate GPO for servers**. Every step below says which machine it ran on and how. Lab run: 2026-10-30, all of it driven from the PAW.
+> How the lab's member server **PDQ-SRVR** (Windows Server 2025 Datacenter, in its own OU `JMSC-Servers`) got BitLocker on its operating system drive, with the recovery password stored in AD DS before encryption started. It uses the same two scripts as the workstation in the [README](../README.md), with a **separate GPO for servers**. Every step below says which machine it ran on and how. Lab run: 2026-10-30, all of it driven from the PAW.
 
 **Result.** C: is `FullyEncrypted` with XTS-AES 256, protection On, with a TPM protector and recovery password `{3D7D76AD-7658-4C77-BB2E-B235B48061B6}`. AD holds exactly one recovery object for PDQ-SRVR: `2026-10-29T23:44:34-08:00{3D7D76AD-…}`.
 
@@ -37,7 +37,7 @@ Times below are PDQ-SRVR's and DC25-1's clocks, which read 2026-10-29, UTC-08:00
 
 A read-only check from the PAW (step S1) found a fresh Hyper-V VM with only C: (89 GB), Secure Boot on, **no TPM**, no BitLocker feature or module, and no BitLocker policy. In AD, PDQ-SRVR had no recovery passwords:
 
-![Active Directory Users and Computers, OU JMSC-Servers, PDQ-SRVR Properties, BitLocker Recovery tab: BitLocker Recovery Passwords list empty with "No items in this view" and a hint to use Find BitLocker Recovery Password on the domain; Details empty](images/PDQ/NO-BITLOCKER-1.png)
+![Active Directory Users and Computers, OU JMSC-Servers, PDQ-SRVR Properties, BitLocker Recovery tab: BitLocker Recovery Passwords list empty with "No items in this view" and a hint to use Find BitLocker Recovery Password on the domain; Details empty](../images/PDQ/NO-BITLOCKER-1.png)
 
 *1. Before: PDQ-SRVR in `JMSC-Servers`, BitLocker Recovery tab in ADUC: "No items in this view".*
 
@@ -53,7 +53,7 @@ A read-only check from the PAW (step S1) found a fresh Hyper-V VM with only C: (
 | PDQ-SRVR | vTPM | Hyper-V on RYZEN-BEE (step S6) | the TPM protector |
 | RYZEN-BEE | `Hyper-V` module | in-box with Hyper-V | `Set-VMKeyProtector`, `Enable-VMTPM` |
 | DC25-1 | `ActiveDirectory`, `GroupPolicy` modules; PowerShell 7.6.9 | in-box with the AD DS role; MSI, installed earlier | `Set-BitLockerAdBackupGpo.ps1`. Under PowerShell 7 it loads `GroupPolicy` natively and `ActiveDirectory` through Windows PowerShell compatibility. |
-| PAW | RSAT AD DS, Group Policy and BitLocker Recovery Password Viewer tools | `DISM.exe /Online /Add-Capability` ([README section 6](README.md#6-find-a-recovery-password-without-a-gui)) | `Get-ADObject`, GPMC, ADUC |
+| PAW | RSAT AD DS, Group Policy and BitLocker Recovery Password Viewer tools | `DISM.exe /Online /Add-Capability` ([README section 6](../README.md#6-find-a-recovery-password-without-a-gui)) | `Get-ADObject`, GPMC, ADUC |
 
 Windows Server does not have BitLocker until the feature is installed, and a VM has no TPM until the host adds one. Without either, `Enable-BitLockerOsDrive.ps1` stops at its module or TPM check. One shutdown covers both: install the feature without restarting, shut down, add the vTPM on the host, start.
 
@@ -61,7 +61,7 @@ Windows Server does not have BitLocker until the feature is installed, and a VM 
 
 ## 4. The servers GPO
 
-Servers get their own GPO, `JMSC_BitLocker_AD_Backup_Servers`, linked to `OU=JMSC-Servers`. Workstations keep `JMSC_BitLocker_AD_Backup` on `OU=JMSC-WDAC-WRKSTNS`. The servers GPO comes from [`scripts/BitLockerAdBackupGpo.Servers.json`](scripts/BitLockerAdBackupGpo.Servers.json) and has the same recovery, AD backup, encryption method (XTS-AES 256), full-encryption and recovery-message values as the workstation GPO, but **not** the deny-write values:
+Servers get their own GPO, `JMSC_BitLocker_AD_Backup_Servers`, linked to `OU=JMSC-Servers`. Workstations keep `JMSC_BitLocker_AD_Backup` on `OU=JMSC-WDAC-WRKSTNS`. The servers GPO comes from [`scripts/BitLockerAdBackupGpo.Servers.json`](../scripts/BitLockerAdBackupGpo.Servers.json) and has the same recovery, AD backup, encryption method (XTS-AES 256), full-encryption and recovery-message values as the workstation GPO, but **not** the deny-write values:
 
 | Left out | Workstation GPO | Why not on servers |
 |---|---|---|
@@ -79,11 +79,11 @@ A `Backup-GPO` copy of the GPO as created in the lab, with a readable HTML repor
 
 The tests (`.\tests\Test-SetBitLockerAdBackupGpo.ps1`) check that the servers file differs from the workstation file only by name, OU and the deny-write values, and run it end to end against mocks: 36 values, nothing under the SYSTEM key, linked to `JMSC-Servers`, and a second run changes nothing.
 
-![Group Policy Management, JMSC_BitLocker_AD_Backup_Servers selected under the JMSC-Servers OU, Scope tab: linked to JMSC-Servers (path skynet-home.local/JMSC-Servers), Enforced No, Link Enabled Yes; Security Filtering: Authenticated Users; WMI filter: none](images/PDQ/BITLOCKER-SERVER-ENABLED-1.png)
+![Group Policy Management, JMSC_BitLocker_AD_Backup_Servers selected under the JMSC-Servers OU, Scope tab: linked to JMSC-Servers (path skynet-home.local/JMSC-Servers), Enforced No, Link Enabled Yes; Security Filtering: Authenticated Users; WMI filter: none](../images/PDQ/BITLOCKER-SERVER-ENABLED-1.png)
 
 *2. GPMC after step S5: `JMSC_BitLocker_AD_Backup_Servers` is linked to `JMSC-Servers`, link enabled, not enforced, filtered to Authenticated Users. The workstation OU `JMSC-WDAC-WRKSTNS` keeps its own GPO.*
 
-![Active Directory Users and Computers with the OU JMSC-Servers selected: it holds one computer, PDQ-SRVR](images/PDQ/BITLOCKER-SERVER-ENABLED-1.5.png)
+![Active Directory Users and Computers with the OU JMSC-Servers selected: it holds one computer, PDQ-SRVR](../images/PDQ/BITLOCKER-SERVER-ENABLED-1.5.png)
 
 *3. The GPO's reach: `JMSC-Servers` holds one computer, PDQ-SRVR.*
 
@@ -103,7 +103,7 @@ The tests (`.\tests\Test-SetBitLockerAdBackupGpo.ps1`) check that the servers fi
 | S8 | PDQ-SRVR | **as SYSTEM**: a one-time scheduled task running `pwsh.exe`, registered and removed over the `PowerShell.7` endpoint | `Enable-BitLockerOsDrive.ps1 -WhatIf` | every check PASS; plan: add a recovery password, encrypt with XTS-AES 256 and the TPM |
 | S9 | PDQ-SRVR | as SYSTEM, the same way | `Enable-BitLockerOsDrive.ps1 -NoConfirm` (23:44:33) | recovery password `{3D7D76AD-…}` added, BitLocker on; event 784 at 23:44:36; AD object `2026-10-29T23:44:34-08:00{3D7D76AD-…}`. The script itself reported WARN "not in AD yet" ([section 7](#7-what-the-server-run-showed)). |
 | S10 | PDQ-SRVR | `PowerShell.7` endpoint | `shutdown /r /t 10 /d p:2:4` for the hardware test | back after 41 s; hardware test passed; encryption on write started at 23:46:52 (event 24660), finalization sweep completed at 23:48:32 (event 24667) |
-| S11 | PDQ-SRVR and PAW | `PowerShell.7` endpoint; ADUC | `Get-BitLockerVolume C:`; `Get-ADObject` ([README section 6](README.md#6-find-a-recovery-password-without-a-gui)); BitLocker Recovery tab | see [section 6](#6-result) |
+| S11 | PDQ-SRVR and PAW | `PowerShell.7` endpoint; ADUC | `Get-BitLockerVolume C:`; `Get-ADObject` ([README section 6](../README.md#6-find-a-recovery-password-without-a-gui)); BitLocker Recovery tab | see [section 6](#6-result) |
 | S12 | PDQ-SRVR, DC25-1 | | removed the temporary script and MSI folders | logs kept ([section 8](#8-logs)) |
 
 S5 ran while PDQ-SRVR was off, so the server applied the new GPO at the boot in S6; S7 confirmed it.
@@ -134,7 +134,7 @@ Unregister-ScheduledTask -TaskName 'BitLockerOs-Enable' -Confirm:$false
 | `Get-ADObject` under `CN=PDQ-SRVR` | PAW | exactly one `msFVE-RecoveryInformation` object, `2026-10-29T23:44:34-08:00{3D7D76AD-…}` |
 | BitLocker Recovery tab | PAW, ADUC | the same entry, below |
 
-![Active Directory Users and Computers, OU JMSC-Servers, PDQ-SRVR Properties, BitLocker Recovery tab: one entry dated 2026-10-29 23:44 with Password ID 3D7D76AD-7658-4C77-BB2E-B235B48061B6; Details show the recovery password (redacted), Computer PDQ-SRVR.skynet-home.local, Date 2026-10-29 23:44:34 -0800 and the same Password ID](images/PDQ/BITLOCKER-SERVER-ENABLED-2-REDACTED.png)
+![Active Directory Users and Computers, OU JMSC-Servers, PDQ-SRVR Properties, BitLocker Recovery tab: one entry dated 2026-10-29 23:44 with Password ID 3D7D76AD-7658-4C77-BB2E-B235B48061B6; Details show the recovery password (redacted), Computer PDQ-SRVR.skynet-home.local, Date 2026-10-29 23:44:34 -0800 and the same Password ID](../images/PDQ/BITLOCKER-SERVER-ENABLED-2-REDACTED.png)
 
 *4. After: one recovery password for PDQ-SRVR, Password ID `3D7D76AD-…`, the protector added in step S9, dated 23:44:34 -0800 like the AD object. The recovery password is redacted in this screenshot.*
 
@@ -143,7 +143,7 @@ Unregister-ScheduledTask -TaskName 'BitLockerOs-Enable' -Confirm:$false
 ## 7. What the server run showed
 
 - **Not over a plain WinRM session.** In a remote session the script's AD lookups fail with *An operations error occurred*: the session has a Kerberos ticket for PDQ-SRVR only, not for LDAP on the DC (the second hop). Run `Enable-BitLockerOsDrive.ps1` at the server's console, or as SYSTEM (scheduled task, PDQ Deploy, MECM), which queries AD with the computer account.
-- **The computer account cannot read its own recovery objects.** As SYSTEM the script found `CN=PDQ-SRVR` but 0 recovery objects, although BitLocker had just written one. So a SYSTEM run reports the recovery password as "not in AD yet". Check on the server with event 784, whose fourth data field is the protector ID: `(Get-WinEvent -LogName 'Microsoft-Windows-BitLocker/BitLocker Management' | Where-Object Id -eq 784 | Select-Object -First 1).Properties[3].Value`. Check in AD from an admin account ([README section 6](README.md#6-find-a-recovery-password-without-a-gui)). Don't use a SYSTEM run as the verification run. ([Roadmap](README.md#roadmap): let the script accept event 784 as proof when it runs as SYSTEM.)
+- **The computer account cannot read its own recovery objects.** As SYSTEM the script found `CN=PDQ-SRVR` but 0 recovery objects, although BitLocker had just written one. So a SYSTEM run reports the recovery password as "not in AD yet". Check on the server with event 784, whose fourth data field is the protector ID: `(Get-WinEvent -LogName 'Microsoft-Windows-BitLocker/BitLocker Management' | Where-Object Id -eq 784 | Select-Object -First 1).Properties[3].Value`. Check in AD from an admin account ([README section 6](../README.md#6-find-a-recovery-password-without-a-gui)). Don't use a SYSTEM run as the verification run. ([Roadmap](../README.md#roadmap): let the script accept event 784 as proof when it runs as SYSTEM.)
 - **As on the workstation, the password reached AD before the restart.** On the decrypted drive the script added the recovery password, and `Enable-BitLocker` wrote it to AD (event 784) before it scheduled encryption (event 769).
 - **Feature installs over Windows PowerShell 5.1 remoting.** On the new server, `Get-WindowsFeature` and `dism.exe` dropped the 5.1 session (*The I/O operation has been aborted*), with `WindowsWcpOtherFailure3` in the Application log. Through the `PowerShell.7` endpoint both worked. `Install-WindowsFeature` under PowerShell 7 returns its results through the compatibility layer with empty feature names; run it in `powershell.exe` on the server to read them.
 - **The vTPM belongs to the host.** `-NewLocalKeyProtector` ties it to RYZEN-BEE's local guardian. Moving the VM to another host needs that guardian's certificates.
@@ -160,4 +160,4 @@ Unregister-ScheduledTask -TaskName 'BitLockerOs-Enable' -Confirm:$false
 | PDQ-SRVR | `C:\Logs\Enable-BitLockerOsDrive-20261029-234408.log` and `.csv` | S8, `-WhatIf` |
 | PDQ-SRVR | `C:\Logs\Enable-BitLockerOsDrive-20261029-234433.log` and `.csv` | S9, the change |
 
-Each is a transcript (`.log`) and a results table (`.csv`). Neither contains the recovery password.
+Each is a transcript (`.log`) and a results table (`.csv`). Neither contains the recovery password. Copies of all eight files are in [`server-logs/`](server-logs/README.md).

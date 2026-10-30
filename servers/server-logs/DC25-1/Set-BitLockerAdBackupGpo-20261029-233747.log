@@ -1,0 +1,99 @@
+**********************
+PowerShell transcript start
+Start time: 20261029233747
+Username: SKYNET\lorenzo
+RunAs User: SKYNET\lorenzo
+Configuration Name: PowerShell.7
+Machine: DC25-1 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\WINDOWS\system32\wsmprovhost.exe -Embedding
+Process ID: 8
+PSVersion: 7.6.9
+PSEdition: Core
+GitCommitId: 7.6.9
+OS: Microsoft Windows 10.0.26100
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+PS>TerminatingError(Get-ADDomain): "Could not load file or assembly 'System.ServiceModel.NetFramingBase, Version=10.0.0.0, Culture=neutral, PublicKeyToken=b03f5f7f11d50a3a'. The system cannot find the file specified."
+
+WARNING: this changes the configuration - create or update the BitLocker AD DS backup GPO in skynet-home.local
+  Domain: skynet-home.local (DC=skynet-home,DC=local)
+  GPO: create 'JMSC_BitLocker_AD_Backup_Servers' - BitLocker for servers: escrow recovery passwords and key packages to AD DS; no deny-write on unencrypted drives
+  Policy values to set (36 of 36):
+    under HKLM\SOFTWARE\Policies\Microsoft\FVE
+      OSRecovery : (not set) -> 1
+      OSManageDRA : (not set) -> 1
+      OSRecoveryPassword : (not set) -> 2
+      OSRecoveryKey : (not set) -> 2
+      OSHideRecoveryPage : (not set) -> 0
+      OSActiveDirectoryBackup : (not set) -> 1
+      OSActiveDirectoryInfoToStore : (not set) -> 1
+      OSRequireActiveDirectoryBackup : (not set) -> 1
+      FDVRecovery : (not set) -> 1
+      FDVManageDRA : (not set) -> 1
+      FDVRecoveryPassword : (not set) -> 2
+      FDVRecoveryKey : (not set) -> 2
+      FDVHideRecoveryPage : (not set) -> 0
+      FDVActiveDirectoryBackup : (not set) -> 1
+      FDVActiveDirectoryInfoToStore : (not set) -> 1
+      FDVRequireActiveDirectoryBackup : (not set) -> 1
+      RDVRecovery : (not set) -> 1
+      RDVManageDRA : (not set) -> 1
+      RDVRecoveryPassword : (not set) -> 2
+      RDVRecoveryKey : (not set) -> 2
+      RDVHideRecoveryPage : (not set) -> 0
+      RDVActiveDirectoryBackup : (not set) -> 1
+      RDVActiveDirectoryInfoToStore : (not set) -> 1
+      RDVRequireActiveDirectoryBackup : (not set) -> 1
+      EncryptionMethodWithXtsOs : (not set) -> 7
+      EncryptionMethodWithXtsFdv : (not set) -> 7
+      EncryptionMethodWithXtsRdv : (not set) -> 7
+      OSEncryptionType : (not set) -> 1
+      FDVEncryptionType : (not set) -> 1
+      RDVEncryptionType : (not set) -> 1
+      OSHardwareEncryption : (not set) -> 0
+      FDVHardwareEncryption : (not set) -> 0
+      RDVHardwareEncryption : (not set) -> 0
+      DisableExternalDMAUnderLock : (not set) -> 1
+      RecoveryKeyMessageSource : (not set) -> 2
+      RecoveryKeyMessage : (not set) -> 'This drive is locked by BitLocker. Contact your IT administrator and give them the Recovery key ID shown on this screen. The recovery key is stored in Active Directory.'
+  Link: new, enabled, on OU=JMSC-Servers,DC=skynet-home,DC=local
+  Applies to: 1 computer(s) in that OU: PDQ-SRVR
+  Effect: at their next Group Policy refresh, BitLocker on those computers writes recovery information to AD DS.
+          BitLocker will not turn on for operating system, fixed data, removable data drives until that write succeeds.
+          Drives encrypted from then on use: OS XTS-AES 256, FDV XTS-AES 256, RDV XTS-AES 256. Drives that are already encrypted keep
+          their method until they are decrypted and encrypted again.
+          Whole-drive encryption is required (used-space-only is refused) for: OS, FDV, RDV.
+          The recovery screen shows: 'This drive is locked by BitLocker. Contact your IT administrator and give them the Recovery key ID shown on this screen. The recovery key is stored in Active Directory.'
+  Undo: Remove-GPO -Name 'JMSC_BitLocker_AD_Backup_Servers'   (also removes its links)
+  -NoConfirm: continuing without a prompt.
+PS>TerminatingError(Get-GPRegistryValue): "The running command stopped because the preference variable "ErrorActionPreference" or common parameter is set to Stop: The following Group Policy registry setting was not found: "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE". (Parameter 'keyPath')"
+
+Status Check                Detail
+------ -----                ------
+PASS   Settings             C:\Users\lorenzo\AppData\Local\Temp\BitLockerGpo-03aae27e4fec40758b4ddc3a30c6e232\BitLockerAdBackupGpo.Servers.json: GPO 'JMSC_BitLocker_AD_Backup_Servers', OU 'JMSC-Servers', drive types
+                            OS/FDV/RDV, 8 recovery values each; encryption OS XTS-AES 256, FDV XTS-AES 256, RDV XTS-AES 256
+PASS   Modules              PowerShell Core 7.6.9: GroupPolicy native, ActiveDirectory Windows PowerShell compatibility
+PASS   Active Directory     domain skynet-home.local (DC=skynet-home,DC=local)
+PASS   Settings vs ADMX     36 values checked against C:\WINDOWS\PolicyDefinitions\VolumeEncryption.admx: 36 under HKLM\SOFTWARE\Policies\Microsoft\FVE, 0 under HKLM\SYSTEM\CurrentControlSet\Policies\Microsoft\FVE
+WARN   Central store        \\skynet-home.local\SYSVOL\skynet-home.local\Policies\PolicyDefinitions has no VolumeEncryption.admx, so GPMC shows these values under Extra Registry Settings (clients still apply them). Copy
+                            %SystemRoot%\PolicyDefinitions\VolumeEncryption.admx and en-US\VolumeEncryption.adml there to see them as the normal BitLocker settings.
+PASS   Target OU            OU=JMSC-Servers,DC=skynet-home,DC=local (1 computer(s): PDQ-SRVR)
+PASS   GPO                  'JMSC_BitLocker_AD_Backup_Servers' does not exist yet
+PASS   GPO created          JMSC_BitLocker_AD_Backup_Servers (42a012f0-f1b0-41bd-8bcd-afc976b0b0b5)
+PASS   Values set           36 value(s)
+PASS   Link                 enabled on OU=JMSC-Servers,DC=skynet-home,DC=local
+PASS   Verify values        all 36 values match (key, type and value) in GPO 42a012f0-f1b0-41bd-8bcd-afc976b0b0b5
+PASS   Verify link          enabled on OU=JMSC-Servers,DC=skynet-home,DC=local
+PASS   Registry.pol SHA-256 20A6DB7AD4C58B78BB09089E790E7DA929474BC1BF46BBFB261332FF0B971497 (\\skynet-home.local\SYSVOL\skynet-home.local\Policies\{42A012F0-F1B0-41BD-8BCD-AFC976B0B0B5}\Machine\Registry.pol)
+PASS   GPO version          computer version 36 in AD and SYSVOL; status AllSettingsEnabled
+
+
+PASSED with 1 warning(s)
+Transcript: C:\Logs\Set-BitLockerAdBackupGpo-20261029-233747.log   Results: C:\Logs\Set-BitLockerAdBackupGpo-20261029-233747.csv
+**********************
+PowerShell transcript end
+End time: 20261029233751
+**********************

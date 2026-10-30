@@ -4,7 +4,7 @@
 > Domain-joined Windows computers can write their **BitLocker recovery passwords and key packages** to **their own computer object in AD DS**. This repository sets that up from a **Server Core 2025 domain controller** with in-box PowerShell only — **no GPMC console, no GUI, no downloads**: one GPO for the clients, a one-time backfill for drives that were encrypted before the GPO existed, and key lookup with `Get-ADObject`. **The domain controller needs no schema extension, no ACL change and no extra role.**
 
 > [!IMPORTANT]
-> **Status (2026-10-30): work in progress.** [Section 3](#3-create-the-gpo-server-core-powershell) and [section 5](#5-encrypt-new-drives) have run in the lab with their scripts: two GPOs (workstations and servers) on a Server Core 2025 DC, and BitLocker on a Windows 11 client and on a Windows Server 2025 member server, each with its recovery password in AD. What ran where: [section 10](#10-lab-runbook-what-ran-where) for the workstation, [SERVERS.md](SERVERS.md) for the server. Sections 4 and 6 and the remaining scripts come next ([Roadmap](#roadmap)). The policy registry value names and values are checked against `VolumeEncryption.admx` / `.adml` as shipped with Windows. Link the GPO to a test OU first.
+> **Status (2026-10-30): work in progress.** [Section 3](#3-create-the-gpo-server-core-powershell) and [section 5](#5-encrypt-new-drives) have run in the lab with their scripts: two GPOs (workstations and servers) on a Server Core 2025 DC, and BitLocker on a Windows 11 client and on a Windows Server 2025 member server, each with its recovery password in AD. What ran where: [section 10](#10-lab-runbook-what-ran-where) for the workstation, [servers/README.md](servers/README.md) for the server. Sections 4 and 6 and the remaining scripts come next ([Roadmap](#roadmap)). The policy registry value names and values are checked against `VolumeEncryption.admx` / `.adml` as shipped with Windows. Link the GPO to a test OU first.
 
 ---
 
@@ -72,7 +72,7 @@
 .\scripts\Set-BitLockerAdBackupGpo.ps1 -NoConfirm   # automation
 ```
 
-**Two GPOs: workstations and servers.** The same script creates a separate GPO for servers from [`scripts/BitLockerAdBackupGpo.Servers.json`](scripts/BitLockerAdBackupGpo.Servers.json): `JMSC_BitLocker_AD_Backup_Servers`, linked to `OU=JMSC-Servers`. It holds the same recovery, AD backup, encryption method and recovery message values, but **not** the deny-write values (`FDVDenyWriteAccess`, `RDVDenyWriteAccess`, `RDVDenyCrossOrg`), so a data disk added to a server later stays writable before it is encrypted. That makes 36 values, all under the SOFTWARE key. A `Backup-GPO` copy of the servers GPO from the lab is in [`gpo/`](gpo/README.md).
+**Two GPOs: workstations and servers.** The same script creates a separate GPO for servers from [`scripts/BitLockerAdBackupGpo.Servers.json`](scripts/BitLockerAdBackupGpo.Servers.json): `JMSC_BitLocker_AD_Backup_Servers`, linked to `OU=JMSC-Servers`. It holds the same recovery, AD backup, encryption method and recovery message values, but **not** the deny-write values (`FDVDenyWriteAccess`, `RDVDenyWriteAccess`, `RDVDenyCrossOrg`), so a data disk added to a server later stays writable before it is encrypted. That makes 36 values, all under the SOFTWARE key. A `Backup-GPO` copy of the servers GPO from the lab is in [`servers/gpo/`](servers/gpo/README.md).
 
 ```powershell
 .\scripts\Set-BitLockerAdBackupGpo.ps1 -SettingsPath .\scripts\BitLockerAdBackupGpo.Servers.json -WhatIf
@@ -83,7 +83,7 @@ Tests (mocks, nothing in AD is touched): `.\tests\Test-SetBitLockerAdBackupGpo.p
 
 **Lab run (2026-10-28, DC25-1):** the script created `JMSC_BitLocker_AD_Backup` with the 24 values and linked it to `OU=JMSC-WDAC-WRKSTNS`. A second run found nothing to change. On WIN11-PAW-WDAC, the computer in that OU, `gpupdate /target:computer` brought all 24 values into `HKLM\SOFTWARE\Policies\Microsoft\FVE`, and `gpresult` lists the GPO as applied. A later run the same day backed up the GPO and added the three encryption-method values (XTS-AES 256, 27 values in all); the PAW received them at its next `gpupdate`. A third update added the hardening values and the recovery-screen message (39 values, 2 of them under the SYSTEM key). Its first attempt stopped after 10 of 12 writes with a brief `E_ACCESSDENIED` from SYSVOL; the script now retries that error, and the next run wrote the last 2, verified all 39 and changed nothing when run again. The PAW shows all of them after `gpupdate`.
 
-**Lab run (2026-10-30, DC25-1):** the script created `JMSC_BitLocker_AD_Backup_Servers` from the servers settings file with 36 values and linked it to `OU=JMSC-Servers`. PDQ-SRVR, the server in that OU, applied it at its next boot ([SERVERS.md](SERVERS.md#4-the-servers-gpo), steps S5 and S7).
+**Lab run (2026-10-30, DC25-1):** the script created `JMSC_BitLocker_AD_Backup_Servers` from the servers settings file with 36 values and linked it to `OU=JMSC-Servers`. PDQ-SRVR, the server in that OU, applied it at its next boot ([servers/README.md](servers/README.md#4-the-servers-gpo), steps S5 and S7).
 
 ![GPMC showing the OU JMSC-WDAC-WRKSTNS with three linked GPOs: JMSC-WDAC-PAWS - AppControl Audit (link order 1, enabled), JMSC-WDAC-PAWS - AppControl Enforce (link order 2, link disabled) and JMSC_BitLocker_AD_Backup (link order 3, not enforced, link enabled, GPO status Enabled)](images/GroupPolicy-BLE-GPO.png)
 
@@ -250,7 +250,7 @@ Enable-BitLocker -MountPoint C: -EncryptionMethod XtsAes256 -TpmProtector   # fu
 3. Restart. The hardware test checks that the TPM unlocks the drive, then encryption starts (`-SkipHardwareTest` starts it at once).
 4. Run the script again: it verifies method, protectors and the recovery password in AD, and changes nothing if all is in place. If BitLocker only writes the password to AD when encryption starts, this is the run that confirms it. Read the password from AD with [section 6](#6-find-a-recovery-password-without-a-gui).
 
-Run it on the computer itself: at its console, or as SYSTEM through a scheduled task or a deployment tool. In a plain WinRM session its AD lookups fail (the second hop), and a SYSTEM run cannot see the recovery objects in AD, so it reports the password as "not in AD yet" even after event 784. Verify from an admin account instead ([SERVERS.md, section 7](SERVERS.md#7-what-the-server-run-showed)).
+Run it on the computer itself: at its console, or as SYSTEM through a scheduled task or a deployment tool. In a plain WinRM session its AD lookups fail (the second hop), and a SYSTEM run cannot see the recovery objects in AD, so it reports the password as "not in AD yet" even after event 784. Verify from an admin account instead ([servers/README.md, section 7](servers/README.md#7-what-the-server-run-showed)).
 
 Tests (mocks, nothing on the computer or in AD is touched): `.\tests\Test-EnableBitLockerOsDrive.ps1`, in Windows PowerShell 5.1 and PowerShell 7.
 
@@ -368,7 +368,7 @@ Only needed if you also want to encrypt the DC's own drives.
 | `Enable-BitLocker` fails with `0x80310030` (*bootable media (CD or DVD)*) | A disc or ISO is in an optical drive. Remove it (Hyper-V host: `Get-VMDvdDrive -VMName <vm> \| Set-VMDvdDrive -Path $null`), restart, run again. |
 | Recovery password added, but no AD object | Normal on a decrypted drive: BitLocker writes it to AD when it is turned on (event 784). `Backup-BitLockerKeyProtector` cannot help there (`FVE_E_NOT_ACTIVATED`). |
 | `Get-ADObject` returns the object but no password | The account cannot read the confidential attribute ([section 7](#7-who-can-read-the-keys)). |
-| `Enable-BitLockerOsDrive.ps1` over WinRM: *An operations error occurred* at the AD check | The second hop: a remote session cannot query LDAP on the DC. Run the script at the computer's console or as SYSTEM ([SERVERS.md, section 7](SERVERS.md#7-what-the-server-run-showed)). |
+| `Enable-BitLockerOsDrive.ps1` over WinRM: *An operations error occurred* at the AD check | The second hop: a remote session cannot query LDAP on the DC. Run the script at the computer's console or as SYSTEM ([servers/README.md, section 7](servers/README.md#7-what-the-server-run-showed)). |
 | Run as SYSTEM: WARN *recovery password … is not in AD yet*, but event 784 is logged | The computer account writes its recovery object but cannot read it. Event 784's fourth data field is the protector ID; confirm the AD object from an admin account ([section 6](#6-find-a-recovery-password-without-a-gui)). |
 | What did BitLocker do? | `Get-WinEvent -LogName 'Microsoft-Windows-BitLocker/BitLocker Management' -MaxEvents 20` (Event Viewer: *Applications and Services Logs → Microsoft → Windows → BitLocker-API → Management*). Seen in the lab: 775 key protector created, 784 recovery information backed up to AD DS, 769 encryption will start at the next restart, 770 decryption started. |
 
@@ -376,7 +376,7 @@ Only needed if you also want to encrypt the DC's own drives.
 
 ## 10. Lab runbook: what ran where
 
-Everything that ran in the lab to get the workstation's BitLocker recovery password into AD, in order, with the machine each step ran on. The PAW was the management computer throughout: scripts that change a machine were copied from the PAW to that machine and ran there. **The server, PDQ-SRVR, has its own write-up: [SERVERS.md](SERVERS.md).**
+Everything that ran in the lab to get the workstation's BitLocker recovery password into AD, in order, with the machine each step ran on. The PAW was the management computer throughout: scripts that change a machine were copied from the PAW to that machine and ran there. **The server, PDQ-SRVR, has its own write-up: [servers/README.md](servers/README.md).**
 
 ### Machines
 
@@ -384,7 +384,7 @@ Everything that ran in the lab to get the workstation's BitLocker recovery passw
 |---|---|---|
 | **WIN11-PAW-WDAC** | Windows 11 Enterprise PAW, Hyper-V VM with a vTPM, in `OU=JMSC-WDAC-WRKSTNS`. Management computer for every step, and the first BitLocker client. | PowerShell 7.6.9, elevated |
 | **DC25-1** | Server Core 2025 domain controller of `skynet-home.local`. Creates and links the GPOs. | PowerShell 7.6.9 or Windows PowerShell 5.1, over WinRM from the PAW |
-| **PDQ-SRVR** | Windows Server 2025 Datacenter member server in `OU=JMSC-Servers`: see [SERVERS.md](SERVERS.md). | PowerShell 7.6.9 over WinRM from the PAW (`PowerShell.7` endpoint) |
+| **PDQ-SRVR** | Windows Server 2025 Datacenter member server in `OU=JMSC-Servers`: see [servers/README.md](servers/README.md). | PowerShell 7.6.9 over WinRM from the PAW (`PowerShell.7` endpoint) |
 | **RYZEN-BEE** | Hyper-V host of both VMs. Not domain-joined and not reachable over WinRM from the PAW. | Windows PowerShell, elevated, on the host |
 
 ### Modules and features
@@ -398,7 +398,7 @@ Everything that ran in the lab to get the workstation's BitLocker recovery passw
 | DC25-1 | `ActiveDirectory`, `GroupPolicy` modules | in-box with the AD DS role | `Set-BitLockerAdBackupGpo.ps1`. Under PowerShell 7 it loads `GroupPolicy` natively and `ActiveDirectory` through Windows PowerShell compatibility. |
 | DC25-1 | PowerShell 7.6.9 | MSI, installed earlier | the `PowerShell.7` remoting endpoint |
 
-What a server needs on top of this (PowerShell 7, the BitLocker feature, a vTPM) is in [SERVERS.md](SERVERS.md#3-what-the-server-needs).
+What a server needs on top of this (PowerShell 7, the BitLocker feature, a vTPM) is in [servers/README.md](servers/README.md#3-what-the-server-needs).
 
 ### Workstation: WIN11-PAW-WDAC (2026-10-28 and 2026-10-29)
 
@@ -416,7 +416,7 @@ What a server needs on top of this (PowerShell 7, the BitLocker feature, a vTPM)
 
 ### Server: PDQ-SRVR (2026-10-30)
 
-Its own write-up, with screenshots: **[SERVERS.md](SERVERS.md)**. It covers what the server needed (PowerShell 7, the BitLocker feature, a vTPM), the separate servers GPO, every step in order with where it ran (steps S1 to S12), the result in AD, and what the run showed, for example why the BitLocker script ran as SYSTEM and why it then cannot see its own recovery object.
+Its own write-up, with screenshots: **[servers/README.md](servers/README.md)**. It covers what the server needed (PowerShell 7, the BitLocker feature, a vTPM), the separate servers GPO, every step in order with where it ran (steps S1 to S12), the result in AD, and what the run showed, for example why the BitLocker script ran as SYSTEM and why it then cannot see its own recovery object.
 
 ---
 

@@ -1,0 +1,42 @@
+**********************
+PowerShell transcript start
+Start time: 20261029234408
+Username: SKYNET\PDQ-SRVR$
+RunAs User: SKYNET\PDQ-SRVR$
+Configuration Name: 
+Machine: PDQ-SRVR (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Program Files\PowerShell\7\pwsh.dll -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command & 'C:\Windows\Temp\BitLockerOs\Enable-BitLockerOsDrive.ps1' -WhatIf *> 'C:\Windows\Temp\BitLockerOs\whatif.txt'; exit $LASTEXITCODE
+Process ID: 3248
+PSVersion: 7.6.9
+PSEdition: Core
+GitCommitId: 7.6.9
+OS: Microsoft Windows 10.0.26100
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+PSRemotingProtocolVersion: 2.4
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+What if: Performing the operation "Add a recovery password (stored in AD by policy)" on target "C:".
+What if: Performing the operation "Enable-BitLocker XtsAes256 with TPM" on target "C:".
+
+Status Check             Detail
+------ -----             ------
+PASS   Modules           PowerShell Core 7.6.9
+PASS   Active Directory  CN=PDQ-SRVR,OU=JMSC-Servers,DC=skynet-home,DC=local on DC25-1.skynet-home.local; 0 recovery object(s) stored for it
+PASS   Policy            AD backup required; encryption method XtsAes256 (EncryptionMethodWithXtsOs = 7)
+PASS   TPM               present and ready
+PASS   Secure Boot       on
+PASS   WinRE             enabled
+PASS   Drive             C: FullyDecrypted, None, protection Off, protectors: none
+PASS   Optical drives    no disc or ISO loaded
+PASS   Recovery password -WhatIf: would add one and confirm it in AD
+PASS   Encrypt           -WhatIf: would encrypt with XtsAes256 and a TPM protector
+
+
+PASSED
+Transcript: C:\Logs\Enable-BitLockerOsDrive-20261029-234408.log   Results: C:\Logs\Enable-BitLockerOsDrive-20261029-234408.csv
+**********************
+PowerShell transcript end
+End time: 20261029234410
+**********************

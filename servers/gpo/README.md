@@ -1,6 +1,6 @@
 # GPO backups
 
-Backups of the lab's BitLocker GPOs, made with `Backup-GPO` from the PAW. The scripts and settings files in [`scripts/`](../scripts/) are the source of truth: these folders are snapshots of what they created, for reference and for `Restore-GPO` / `Import-GPO`.
+Backups of the lab's BitLocker GPOs, made with `Backup-GPO` from the PAW. The scripts and settings files in [`scripts/`](../../scripts/) are the source of truth: these folders are snapshots of what they created, for reference and for `Restore-GPO` / `Import-GPO`.
 
 | Folder | GPO | GPO ID | Backup ID | Taken | Linked to in the lab |
 |---|---|---|---|---|---|
@@ -8,7 +8,7 @@ Backups of the lab's BitLocker GPOs, made with `Backup-GPO` from the PAW. The sc
 
 ## JMSC_BitLocker_AD_Backup_Servers
 
-The servers GPO from [SERVERS.md](../SERVERS.md#4-the-servers-gpo), created by `Set-BitLockerAdBackupGpo.ps1` from [`scripts/BitLockerAdBackupGpo.Servers.json`](../scripts/BitLockerAdBackupGpo.Servers.json): 36 values under `HKLM\SOFTWARE\Policies\Microsoft\FVE` (recovery and AD backup for OS, fixed and removable drives, XTS-AES 256, full encryption, software encryption only, DMA protection when locked, the custom recovery-screen message), and none of the deny-write values. Computer version 36, status `AllSettingsEnabled`.
+The servers GPO from [the server write-up](../README.md#4-the-servers-gpo), created by `Set-BitLockerAdBackupGpo.ps1` from [`scripts/BitLockerAdBackupGpo.Servers.json`](../../scripts/BitLockerAdBackupGpo.Servers.json): 36 values under `HKLM\SOFTWARE\Policies\Microsoft\FVE` (recovery and AD backup for OS, fixed and removable drives, XTS-AES 256, full encryption, software encryption only, DMA protection when locked, the custom recovery-screen message), and none of the deny-write values. Computer version 36, status `AllSettingsEnabled`.
 
 | File | What it is |
 |---|---|
@@ -25,10 +25,10 @@ Keep the `{61E583DA-…}` folder name as it is: the manifest refers to it by tha
 
 ```powershell
 # Same domain: put the GPO back as it was at backup time (same GPO ID)
-Restore-GPO -BackupId 61E583DA-6875-48CB-880C-B9237E706BCF -Path .\gpo\JMSC_BitLocker_AD_Backup_Servers
+Restore-GPO -BackupId 61E583DA-6875-48CB-880C-B9237E706BCF -Path .\servers\gpo\JMSC_BitLocker_AD_Backup_Servers
 
 # Any domain: copy the settings into a GPO of that name, creating it if needed, then link it
-Import-GPO -BackupId 61E583DA-6875-48CB-880C-B9237E706BCF -Path .\gpo\JMSC_BitLocker_AD_Backup_Servers -TargetName 'JMSC_BitLocker_AD_Backup_Servers' -CreateIfNeeded
+Import-GPO -BackupId 61E583DA-6875-48CB-880C-B9237E706BCF -Path .\servers\gpo\JMSC_BitLocker_AD_Backup_Servers -TargetName 'JMSC_BitLocker_AD_Backup_Servers' -CreateIfNeeded
 New-GPLink -Name 'JMSC_BitLocker_AD_Backup_Servers' -Target 'OU=JMSC-Servers,DC=<your>,DC=<domain>' -LinkEnabled Yes
 ```
 
@@ -38,8 +38,8 @@ Links live on the OU, not in the GPO, so neither command brings them back: link 
 
 ```powershell
 $Name = 'JMSC_BitLocker_AD_Backup_Servers'
-Backup-GPO -Name $Name -Path ".\gpo\$Name" -Comment 'Lab snapshot from skynet-home.local, created by Set-BitLockerAdBackupGpo.ps1 with BitLockerAdBackupGpo.Servers.json'
-Get-GPOReport -Name $Name -ReportType Html -Path ".\gpo\$Name\$Name.html"
+Backup-GPO -Name $Name -Path ".\servers\gpo\$Name" -Comment 'Lab snapshot from skynet-home.local, created by Set-BitLockerAdBackupGpo.ps1 with BitLockerAdBackupGpo.Servers.json'
+Get-GPOReport -Name $Name -ReportType Html -Path ".\servers\gpo\$Name\$Name.html"
 ```
 
 `Backup-GPO` adds a new `{ID}` folder next to the old one; remove the old folder and its entry in `manifest.xml` (or start from an empty folder) so only one backup remains.
