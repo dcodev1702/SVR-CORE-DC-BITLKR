@@ -17,6 +17,7 @@
 6. [Result](#6-result)
 7. [What the server run showed](#7-what-the-server-run-showed)
 8. [Logs](#8-logs)
+9. [Check BitLocker on the server](#9-check-bitlocker-on-the-server)
 
 ---
 
@@ -166,3 +167,45 @@ Unregister-ScheduledTask -TaskName 'BitLockerOs-Enable' -Confirm:$false
 | PDQ-SRVR | `C:\Logs\Enable-BitLockerOsDrive-20261029-234433.log` and `.csv` | S9, the change |
 
 Each is a transcript (`.log`) and a results table (`.csv`). Neither contains the recovery password. Copies of all eight files are in [`server-logs/`](server-logs/README.md).
+
+---
+
+## 9. Check BitLocker on the server
+
+At an elevated prompt on the server's console. Server Core's console is already elevated, and these run in both cmd and PowerShell:
+
+```powershell
+# Conversion status, percentage encrypted, method, protection, protector types
+manage-bde -status C:
+
+# The same from the BitLocker module
+Get-BitLockerVolume -MountPoint C: | Format-List MountPoint, VolumeStatus, EncryptionPercentage, EncryptionMethod, ProtectionStatus, KeyProtector
+
+# Each protector with its ID
+manage-bde -protectors -get C:
+```
+
+> [!WARNING]
+> `manage-bde -protectors -get C:` also prints the 48-digit recovery password. Run it where no one else can read the screen, and keep its output out of logs and tickets.
+
+| Field | `manage-bde -status` | `Get-BitLockerVolume` | PDQ-SRVR when finished |
+|---|---|---|---|
+| Progress | Percentage Encrypted | `EncryptionPercentage` | 100% |
+| State | Conversion Status | `VolumeStatus` | Fully Encrypted / `FullyEncrypted` |
+| Protection | Protection Status | `ProtectionStatus` | Protection On / `On`. It reads Off while the drive is still encrypting. |
+| Method | Encryption Method | `EncryptionMethod` | XTS-AES 256 / `XtsAes256` |
+| Protectors | Key Protectors | `KeyProtector` | TPM and Numerical Password / `Tpm`, `RecoveryPassword {3D7D76AD-…}` |
+
+To check that the recovery password reached AD, look on the server for event 784, whose fourth field is the protector ID ([section 7](#7-what-the-server-run-showed)):
+
+```powershell
+Get-WinEvent -LogName 'Microsoft-Windows-BitLocker/BitLocker Management' | Where-Object Id -eq 784 | Select-Object -First 1 TimeCreated, @{n='ProtectorId';e={$_.Properties[3].Value}}
+```
+
+In AD, check from an admin account with [README section 6](../README.md#6-find-a-recovery-password-without-a-gui), or on the BitLocker Recovery tab in ADUC (picture 4).
+
+From the Hyper-V host, without signing in to the server (elevated; PowerShell Direct asks for the server's admin credential):
+
+```powershell
+Invoke-Command -VMName 'PDQ - Server 2025' -Credential (Get-Credential) -ScriptBlock { manage-bde -status C: }
+```
