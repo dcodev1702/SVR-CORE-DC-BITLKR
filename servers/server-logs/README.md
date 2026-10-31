@@ -2,7 +2,7 @@
 
 The logs the two scripts wrote during the PDQ-SRVR run ([steps S5, S8 and S9](../README.md#5-what-ran-where-in-order)), copied unchanged from `C:\Logs` on each machine (SHA-256 checked after the copy). Each run writes a transcript (`.log`) and a results table (`.csv`). Times are the machines' clocks, UTC-08:00. None of them contains a recovery password: the scripts never print or log it.
 
-[`FILE-SRVR-1/`](FILE-SRVR-1/) holds the same scripts' logs from the FILE-SRVR-1 run on 2026-10-30 ([run log](../FILE-SRVR-1/FILE-SRVR-1-domain-bitlocker-log.md)): `Enable-VmTpm.ps1` on its Hyper-V host GTR-PRO, and `Enable-BitLockerOsDrive.ps1` on FILE-SRVR-1, copied from its `C:\Logs`. Times are those machines' clocks.
+[`FILE-SRVR-1/`](FILE-SRVR-1/) holds the same scripts' logs from the FILE-SRVR-1 run (Windows Server 2025 Server Core) on 2026-10-30 ([write-up](../FILE-SRVR-1/README.md)): `Enable-VmTpm.ps1` on its Hyper-V host GTR-PRO, and `Enable-BitLockerOsDrive.ps1` on FILE-SRVR-1, copied from its `C:\Logs`. Times are those machines' clocks.
 
 | Folder | Files (`.log`, `.csv`) | Step | Ran as | Outcome |
 |---|---|---|---|---|

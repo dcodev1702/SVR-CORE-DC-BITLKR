@@ -1,8 +1,8 @@
-# FILE-SRVR-1: domain join + BitLocker with AD key backup
+# FILE-SRVR-1 run log: domain join and BitLocker with AD key backup
 
-Running log. Host **GTR-PRO** (Hyper-V), guest **FILE-SRVR-1** (Windows Server 2025 Datacenter, Gen 2).
-Procedure follows [`servers/README.md`](../README.md) (the PDQ-SRVR run), driven from the Hyper-V host by [`Join-DomainAndBitLocker.ps1`](Join-DomainAndBitLocker.ps1). Logs: [`server-logs/FILE-SRVR-1/`](../server-logs/FILE-SRVR-1/). Screenshots: [below](#screenshots).
-Times are GTR-PRO local time (UTC-07:00), 2026-10-30. Recovery passwords are never written here, only protector IDs.
+The running log of the FILE-SRVR-1 run, as [`Join-DomainAndBitLocker.ps1`](Join-DomainAndBitLocker.ps1) wrote it, step by step with the full output of each script. The write-up, result and screenshots are in the [README](README.md).
+
+Host **GTR-PRO** (Windows 11 Pro, Hyper-V); guest **FILE-SRVR-1** (Windows Server 2025 Datacenter, **Server Core**, Generation 2 VM). Times are GTR-PRO local time (UTC-07:00), 2026-10-30. Recovery passwords are never written here, only protector IDs.
 
 ### 0. Preparation (from Claude Code on GTR-PRO)
 
@@ -161,69 +161,5 @@ Transcript: C:\Logs\Enable-BitLockerOsDrive-20261030-162429.log   Results: C:\Lo
 - `16:27` The section 11 **WARN** on event 784 is a false alarm in the run script, not in BitLocker: the event stores the protector ID as `76c26316-…` (lower case, no braces) and the script compared it literally with `{76C26316-…}`. It is the same protector, and AD holds its object. Comparison fixed in `Join-DomainAndBitLocker.ps1` for later runs.
 - `16:27` `protection Off` while `EncryptionInProgress` is expected; it turns On when C: reaches `FullyEncrypted` (as on PDQ-SRVR). At 16:27:36 the VHDX had grown from 19.6 to 21.4 GB of 70 GB: encryption is running in the background.
 - `16:27` Evidence (the run's `FILE-SRVR-1-evidence\` folder, now [`server-logs/FILE-SRVR-1/`](../server-logs/FILE-SRVR-1/)): `Enable-VmTpm-20261030-162329` (.log/.csv, from GTR-PRO) and `Enable-BitLockerOsDrive-20261030-162423` (-WhatIf) / `-162429` (the change) (.log/.csv, copied from FILE-SRVR-1 `C:\Logs`). None contains the recovery password.
-- `16:40` Screenshot, ADUC: FILE-SRVR-1 in `JMSC-Servers` next to PDQ-SRVR, one recovery password, Password ID `76C26316-…`, added 2026-10-30 16:24 (picture 1).
-- `16:44` Screenshot, FILE-SRVR-1 console: `manage-bde -status C:` reports **Fully Encrypted, 100%, XTS-AES 256, Protection On**; `manage-bde -protectors -get C:` shows TPM `{A8614725-…}` (PCR 7, 11, Secure Boot) and Numerical Password `{76C26316-…}` with backup type **AD backup** (picture 2).
-
-### Result
-
-| Item | State |
-|---|---|
-| Domain | FILE-SRVR-1 joined to `skynet-home.local`, secure channel OK |
-| OU | `CN=FILE-SRVR-1,OU=JMSC-Servers,DC=skynet-home,DC=local` (same as PDQ-SRVR) |
-| DNS | VM uses DC25-1 (192.168.10.100); `FILE-SRVR-1.skynet-home.local` -> 192.168.10.104 |
-| Policy | `JMSC_BitLocker_AD_Backup_Servers` applied, 36 FVE values (no new GPO) |
-| BitLocker feature | Installed (BitLocker Drive Encryption, Enhanced Storage) |
-| vTPM | already on; Secure Boot on; install ISO ejected |
-| C: | `FullyEncrypted`, XTS-AES 256, protection On, TPM `{A8614725-DADB-4C9F-8A9B-36CE84F57AB8}` + RecoveryPassword `{76C26316-8ED5-4972-9C99-AA17FA53C40C}` (picture 2) |
-| AD key backup | event 784 at 16:24:32; AD object `2026-10-30T16:24:30-08:00{76C26316-8ED5-4972-9C99-AA17FA53C40C}` under the computer object (picture 1) |
-
-### Screenshots
-
-![Active Directory Users and Computers, OU JMSC-Servers holding FILE-SRVR-1 and PDQ-SRVR; FILE-SRVR-1 Properties, BitLocker Recovery tab: one entry dated 2026-10-30 16:24 with Password ID 76C26316-8ED5-4972-9C99-AA17FA53C40C; Details show the recovery password (redacted), Computer FILE-SRVR-1.skynet-home.local, Date 2026-10-30 16:24:30 -0800 and the same Password ID](../../images/FILE-SRVR/FILE-SRVR-1-ENABLED-BTL-1-REDACTED.png)
-
-*1. ADUC: FILE-SRVR-1 sits in `JMSC-Servers` with PDQ-SRVR, and its BitLocker Recovery tab holds the one recovery password the run added, Password ID `76C26316-…`. The recovery password is redacted in this screenshot.*
-
-![Virtual Machine Connection to FILE-SRVR-1 on GTR-PRO, cmd: manage-bde -status C: shows Size 69.00 GB, Conversion Status Fully Encrypted, Percentage Encrypted 100.0%, Encryption Method XTS-AES 256, Protection Status Protection On, Key Protectors TPM and Numerical Password; manage-bde -protectors -get C: shows TPM ID {A8614725-DADB-4C9F-8A9B-36CE84F57AB8} with PCR Validation Profile 7, 11 (uses Secure Boot), and Numerical Password ID {76C26316-8ED5-4972-9C99-AA17FA53C40C} with the password redacted and Backup type AD backup](../../images/FILE-SRVR/FILE-SRVR-1-ENABLED-BTL-2-REDACTED.png)
-
-*2. On FILE-SRVR-1 itself, through Hyper-V's Virtual Machine Connection: C: is **Fully Encrypted** with XTS-AES 256 and **Protection On**; the recovery password protector `{76C26316-…}` reports backup type **AD backup**. The password line is redacted in this screenshot.*
-
-### Checking BitLocker on FILE-SRVR-1
-
-At an elevated prompt on the server's console (Server Core's console is elevated by default). These work in both cmd and PowerShell:
-
-```powershell
-# Status: conversion status, percentage encrypted, method, protection on/off, protector types
-manage-bde -status C:
-
-# The same in PowerShell
-Get-BitLockerVolume -MountPoint C: | Format-List MountPoint, VolumeStatus, EncryptionPercentage, EncryptionMethod, ProtectionStatus, KeyProtector
-
-# Protectors with their IDs
-manage-bde -protectors -get C:
-```
-
-> [!WARNING]
-> `manage-bde -protectors -get C:` also prints the 48-digit recovery password. Run it only where no one else can read the screen, and don't paste its output into logs or tickets.
-
-| What to look for | Where | Expected when finished |
-|---|---|---|
-| Encryption progress | `manage-bde -status`: *Percentage Encrypted*; PowerShell: `EncryptionPercentage` | 100% |
-| Conversion status | *Conversion Status*; `VolumeStatus` | Fully Encrypted / `FullyEncrypted` |
-| Protection | *Protection Status*; `ProtectionStatus` | Protection On / `On` (reads Off while encrypting) |
-| Method | *Encryption Method*; `EncryptionMethod` | XTS-AES 256 / `XtsAes256` |
-| Protectors | *Key Protectors*; `KeyProtector` | TPM and Numerical Password (`Tpm`, `RecoveryPassword {76C26316-…}`) |
-
-To confirm the key reached AD without a GUI, on the server:
-
-```powershell
-# Event 784 = recovery information backed up to AD DS; the 4th field is the protector ID
-Get-WinEvent -LogName 'Microsoft-Windows-BitLocker/BitLocker Management' | Where-Object Id -eq 784 | Select-Object -First 1 TimeCreated, @{n='ProtectorId';e={$_.Properties[3].Value}}
-```
-
-From the PAW, read the recovery object in AD with [README section 6](../../README.md#6-find-a-recovery-password-without-a-gui), or in ADUC: `JMSC-Servers` → FILE-SRVR-1 → **BitLocker Recovery** tab.
-
-From the Hyper-V host GTR-PRO (elevated; PowerShell Direct, asks for FILE-SRVR-1's admin credential):
-
-```powershell
-Invoke-Command -VMName FILE-SRVR-1 -Credential (Get-Credential) -ScriptBlock { manage-bde -status C: }
-```
+- `16:40` Screenshot, ADUC: FILE-SRVR-1 in `JMSC-Servers` next to PDQ-SRVR, one recovery password, Password ID `76C26316-…`, added 2026-10-30 16:24 ([README picture 1](README.md#6-result)).
+- `16:44` Screenshot, FILE-SRVR-1 Server Core console: `manage-bde -status C:` reports **Fully Encrypted, 100%, XTS-AES 256, Protection On**; `manage-bde -protectors -get C:` shows TPM `{A8614725-…}` (PCR 7, 11, Secure Boot) and Numerical Password `{76C26316-…}` with backup type **AD backup** ([README picture 2](README.md#6-result)).
