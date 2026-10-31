@@ -1,0 +1,36 @@
+**********************
+PowerShell transcript start
+Start time: 20261030162329
+Username: GTR-PRO\Lorenzo
+RunAs User: GTR-PRO\Lorenzo
+Configuration Name: 
+Machine: GTR-PRO (Microsoft Windows NT 10.0.26300.0)
+Host Application: C:\Program Files\WindowsApps\Microsoft.PowerShell_7.6.9.0_x64__8wekyb3d8bbwe\pwsh.dll -NoProfile -ExecutionPolicy Bypass -File C:\Users\Lorenzo\Downloads\SVR-CORE-DC-BITLKR\scripts\Enable-VmTpm.ps1 -VMName FILE-SRVR-1 -NoConfirm -LogDir c:\Users\Lorenzo\code\host-configure\FILE-SRVR-1-evidence
+Process ID: 26824
+PSVersion: 7.6.9
+PSEdition: Core
+GitCommitId: 7.6.9
+OS: Microsoft Windows 10.0.26300
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+PSRemotingProtocolVersion: 2.4
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+
+Status Check                Detail
+------ -----                ------
+PASS   Hyper-V host         GTR-PRO; Hyper-V 2.0.0.0 in PowerShell Core 7.6.9
+PASS   VM                   'FILE-SRVR-1' (3362fb24-37ab-4aed-a7da-5a54b931beaf): Generation 2, Running; vTPM on; key protector present
+PASS   Plan                 the vTPM is already on - nothing to change; 'FILE-SRVR-1' stays Running
+PASS   Verify vTPM          on (Get-VMSecurity: TpmEnabled = True)
+PASS   Verify key protector present
+PASS   Verify state         Running
+
+
+PASSED
+Transcript: c:\Users\Lorenzo\code\host-configure\FILE-SRVR-1-evidence\Enable-VmTpm-20261030-162329.log   Results: c:\Users\Lorenzo\code\host-configure\FILE-SRVR-1-evidence\Enable-VmTpm-20261030-162329.csv
+**********************
+PowerShell transcript end
+End time: 20261030162330
+**********************

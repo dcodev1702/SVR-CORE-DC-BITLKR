@@ -5,6 +5,8 @@
 
 **Result.** C: is `FullyEncrypted` with XTS-AES 256, protection On, with a TPM protector and recovery password `{3D7D76AD-7658-4C77-BB2E-B235B48061B6}`. AD holds exactly one recovery object for PDQ-SRVR: `2026-10-29T23:44:34-08:00{3D7D76AD-…}`.
 
+**FILE-SRVR-1**, a second member server (Hyper-V VM on the host GTR-PRO), went through the same steps on 2026-10-30 and was joined straight into `JMSC-Servers`: [run log](FILE-SRVR-1/FILE-SRVR-1-domain-bitlocker-log.md), [logs](server-logs/FILE-SRVR-1/), [screenshots](FILE-SRVR-1/FILE-SRVR-1-domain-bitlocker-log.md#screenshots).
+
 ---
 
 ## Contents

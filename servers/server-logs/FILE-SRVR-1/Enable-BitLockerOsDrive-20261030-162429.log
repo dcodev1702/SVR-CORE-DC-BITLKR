@@ -1,0 +1,54 @@
+**********************
+PowerShell transcript start
+Start time: 20261030162429
+Username: SKYNET\FILE-SRVR-1$
+RunAs User: SKYNET\FILE-SRVR-1$
+Configuration Name: 
+Machine: FILE-SRVR-1 (Microsoft Windows NT 10.0.26100.0)
+Host Application: C:\Program Files\PowerShell\7\pwsh.dll -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command & 'C:\Windows\Temp\BitLockerOs\Enable-BitLockerOsDrive.ps1' -NoConfirm *> 'C:\Windows\Temp\BitLockerOs\enable.txt'; exit $LASTEXITCODE
+Process ID: 6004
+PSVersion: 7.6.9
+PSEdition: Core
+GitCommitId: 7.6.9
+OS: Microsoft Windows 10.0.26100
+Platform: Win32NT
+PSCompatibleVersions: 1.0, 2.0, 3.0, 4.0, 5.0, 5.1, 6.0, 7.0
+PSRemotingProtocolVersion: 2.4
+SerializationVersion: 1.1.0.1
+WSManStackVersion: 3.0
+**********************
+
+WARNING: this changes the configuration - turn on BitLocker for C: on FILE-SRVR-1
+  Computer: FILE-SRVR-1 (CN=FILE-SRVR-1,OU=JMSC-Servers,DC=skynet-home,DC=local)
+  Drive now: C: FullyDecrypted, None, protection Off, protectors: none
+    1. add a recovery password; BitLocker writes it to AD when the next step turns encryption on, and does not encrypt if that fails
+    2. encrypt with XtsAes256 and a TPM protector (full drive, starting after the restart that tests TPM unlock)
+  Effect: no encryption without the recovery password in AD; read it with README section 6.
+  Undo: Disable-BitLocker -MountPoint C: (decrypts the drive). The recovery password stays in AD.
+  -NoConfirm: continuing without a prompt.
+
+Status Check                    Detail
+------ -----                    ------
+PASS   Modules                  PowerShell Core 7.6.9
+PASS   Active Directory         CN=FILE-SRVR-1,OU=JMSC-Servers,DC=skynet-home,DC=local on DC25-1.skynet-home.local; 0 recovery object(s) stored for it
+PASS   Policy                   AD backup required; encryption method XtsAes256 (EncryptionMethodWithXtsOs = 7)
+PASS   TPM                      present and ready
+PASS   Secure Boot              on
+PASS   WinRE                    enabled
+PASS   Drive                    C: FullyDecrypted, None, protection Off, protectors: none
+PASS   Optical drives           no disc or ISO loaded
+PASS   Recovery password        {76C26316-8ED5-4972-9C99-AA17FA53C40C} added; BitLocker writes it to AD when encryption is turned on
+PASS   Encrypt                  Enable-BitLocker with XtsAes256 and a TPM protector
+WARN   Verify recovery password {76C26316-8ED5-4972-9C99-AA17FA53C40C} is not in AD yet. BitLocker writes it when encryption starts after the restart and does not encrypt without it (RequireActiveDirectoryBackup = 1).
+                                Run this script again after the restart to confirm it in AD.
+PASS   Verify TPM protector     present
+PASS   Verify                   hardware test pending: encryption starts after the restart
+
+
+PASSED with 1 warning(s)
+NEXT: Restart the computer: the hardware test checks that the TPM unlocks the drive, then encryption starts. Run this script again afterwards to confirm the recovery password in AD.
+Transcript: C:\Logs\Enable-BitLockerOsDrive-20261030-162429.log   Results: C:\Logs\Enable-BitLockerOsDrive-20261030-162429.csv
+**********************
+PowerShell transcript end
+End time: 20261030162533
+**********************

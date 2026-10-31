@@ -1,0 +1,7 @@
+"Status","Check","Detail"
+"PASS","Hyper-V host","GTR-PRO; Hyper-V 2.0.0.0 in PowerShell Core 7.6.9"
+"PASS","VM","'FILE-SRVR-1' (3362fb24-37ab-4aed-a7da-5a54b931beaf): Generation 2, Running; vTPM on; key protector present"
+"PASS","Plan","the vTPM is already on - nothing to change; 'FILE-SRVR-1' stays Running"
+"PASS","Verify vTPM","on (Get-VMSecurity: TpmEnabled = True)"
+"PASS","Verify key protector","present"
+"PASS","Verify state","Running"
